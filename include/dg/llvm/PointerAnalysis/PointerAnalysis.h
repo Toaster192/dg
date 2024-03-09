@@ -220,6 +220,7 @@ class DGLLVMPointerAnalysis : public LLVMPointerAnalysis {
     bool threads() const { return _builder->threads(); }
 
     bool hasPointsTo(const llvm::Value *val) override {
+        llvm::errs() << "hasPointsTo: " << *val << "\n";
         if (auto *node = getPointsToNode(val)) {
             return !node->pointsTo.empty();
         }

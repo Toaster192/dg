@@ -23,6 +23,7 @@
 
 #include "dg/PointerAnalysis/Pointer.h"
 #include "dg/llvm/PointerAnalysis/PointerAnalysis.h"
+#include "dg/llvm/PointerAnalysis/SMGPointerAnalysis.h"
 
 #include "dg/tools/llvm-slicer-opts.h"
 #include "dg/tools/llvm-slicer-utils.h"
@@ -781,6 +782,11 @@ int main(int argc, char *argv[]) {
         callgraph = true;
     }
 
+    if (todot && !dump_ir) {
+        llvm::errs() << "Switch -dot requires -ir, switching -ir on.\n";
+        dump_ir = true;
+    }
+
     llvm::LLVMContext context;
     std::unique_ptr<llvm::Module> M =
             parseModule("llvm-pta-dump", context, options);
@@ -809,16 +815,25 @@ int main(int argc, char *argv[]) {
         assert(!dump_graph_only && "SVF does not support -statistics yet");
     }
 #endif
+    if (opts.isSMG()) {
+        assert(dump_iteration == 0 && "SMG does not support -iteration");
+        assert(!dump_graph_only && "SMG does not support -dump_graph_only");
+        assert(!dump_graph_only && "SMG does not support -statistics");
+    }
 
     if (!dump_ir) {
         std::unique_ptr<LLVMPointerAnalysis> llvmpta;
 
+        if (opts.isSMG()){
+            llvmpta.reset(new SMGPointerAnalysis(M.get(), opts));
+	} else{
 #ifdef HAVE_SVF
-        if (opts.isSVF())
-            llvmpta.reset(new SVFPointerAnalysis(M.get(), opts));
-        else
+            if (opts.isSVF())
+                llvmpta.reset(new SVFPointerAnalysis(M.get(), opts));
+            else
 #endif
-            llvmpta.reset(new DGLLVMPointerAnalysis(M.get(), opts));
+                llvmpta.reset(new DGLLVMPointerAnalysis(M.get(), opts));
+	}
 
         tm.start();
         llvmpta->run();
@@ -827,7 +842,9 @@ int main(int argc, char *argv[]) {
 
         if (_stats) {
             if (opts.isSVF()) {
-                llvm::errs() << "SVF analysis does not support stats dumping\n";
+                llvm::errs() << "svf analysis does not support stats dumping\n";
+	    } else if (opts.isSMG()) {
+                llvm::errs() << "smg analysis does not support stats dumping\n"; //TODO
             } else {
                 dumpStats(static_cast<DGLLVMPointerAnalysis *>(llvmpta.get()));
             }
@@ -869,6 +886,7 @@ int main(int argc, char *argv[]) {
                         continue;
                     }
 
+		            llvm::errs() << "Getting points to for Instruction: " << I << "\n";
                     auto pts = llvmpta->getLLVMPointsTo(&I);
                     if (pts.isUnknownSingleton()) {
                         // do not dump the "no-information"

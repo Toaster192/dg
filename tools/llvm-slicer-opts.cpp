@@ -224,6 +224,13 @@ SlicerOptions parseSlicerOptions(int argc, char *argv[], bool requireCrit,
                     "E.g., myAlloc:malloc will treat myAlloc as malloc.\n"),
             llvm::cl::cat(SlicingOpts));
 
+    llvm::cl::opt<std::string> smg_json_filename(
+            "smg-filename",
+            llvm::cl::desc(
+                    "Filename of the SMG json file for SMG PTA.\n"),
+            llvm::cl::cat(SlicingOpts));
+
+
     llvm::cl::opt<LLVMPointerAnalysisOptions::AnalysisType> ptaType(
             "pta", llvm::cl::desc("Choose pointer analysis to use:"),
             llvm::cl::values(
@@ -232,7 +239,9 @@ SlicerOptions parseSlicerOptions(int argc, char *argv[], bool requireCrit,
                     clEnumValN(LLVMPointerAnalysisOptions::AnalysisType::fs,
                                "fs", "Flow-sensitive PTA"),
                     clEnumValN(LLVMPointerAnalysisOptions::AnalysisType::inv,
-                               "inv", "PTA with invalidate nodes")
+                               "inv", "PTA with invalidate nodes"),
+                    clEnumValN(LLVMPointerAnalysisOptions::AnalysisType::smg,
+                               "smg", "PTA from predator SMG")
 #ifdef HAVE_SVF
                             ,
                     clEnumValN(LLVMPointerAnalysisOptions::AnalysisType::svf,
@@ -418,6 +427,7 @@ SlicerOptions parseSlicerOptions(int argc, char *argv[], bool requireCrit,
 
     PTAOptions.entryFunction = entryFunction;
     PTAOptions.fieldSensitivity = dg::Offset(ptaFieldSensitivity);
+    PTAOptions.smg_json_filename = smg_json_filename;
     PTAOptions.analysisType = ptaType;
     PTAOptions.threads = threads;
 

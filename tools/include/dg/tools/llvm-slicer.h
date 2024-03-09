@@ -515,6 +515,9 @@ class ModuleAnnotator {
         case AnalysisType::inv:
             module_comment += "flow-sensitive with invalidate\n";
             break;
+        case AnalysisType::smg:
+            module_comment += "predator SMG\n";
+            break;
         case AnalysisType::svf:
             module_comment += "SVF\n";
             break;

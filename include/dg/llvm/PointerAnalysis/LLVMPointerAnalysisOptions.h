@@ -8,14 +8,17 @@ namespace dg {
 
 struct LLVMPointerAnalysisOptions : public LLVMAnalysisOptions,
                                     PointerAnalysisOptions {
-    enum class AnalysisType { fi, fs, inv, svf } analysisType{AnalysisType::fi};
+    enum class AnalysisType { fi, fs, inv, svf, smg } analysisType{AnalysisType::fi};
 
     bool threads{false};
+
+    std::string smg_json_filename{std::string()};
 
     bool isFS() const { return analysisType == AnalysisType::fs; }
     bool isFSInv() const { return analysisType == AnalysisType::inv; }
     bool isFI() const { return analysisType == AnalysisType::fi; }
     bool isSVF() const { return analysisType == AnalysisType::svf; }
+    bool isSMG() const { return analysisType == AnalysisType::smg; }
 };
 
 } // namespace dg
