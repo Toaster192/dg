@@ -70,8 +70,9 @@ void from_json(const json& j, SMGVarObject& o) {
     l.at("file").get_to(o.varLocFile);
     l.at("line").get_to(o.varLocLine);
     // TODO: remove
+    // maybe save the line the function starts at in smg and use the difference?
     // compensate for the extra import in the predator input source code
-    o.varLocLine = o.varLocLine -1;
+    o.varLocLine = o.varLocLine - 1;
     l.at("column").get_to(o.varLocColumn);
     l.at("insn").get_to(o.varLocInsn);
 
@@ -249,10 +250,6 @@ std::optional<SMGObjectTypeVariant> convertSMGObjectVariant(SMGSimpleObjectTypeV
 
 
 class SMG {
-    public:
-    std::vector<SMGValue> values;
-    std::vector<SMGObjectTypeVariant> objects;
-    std::vector<SMGEdge> edges;
 
     void load(json &smg_json){
         llvm::errs() << "Parsing SMG values" << "\n";
@@ -273,10 +270,13 @@ class SMG {
         }
         llvm::errs() << "Parsing SMG composite objects" << "\n";
         for (auto o : smg_json["compositeObjects"]){
-            if (o["label"] == "region"){
+            std::string label = o["label"].template get<std::string>();
+            if (label == "region"){
                 objects.push_back(o.template get<SMGRegionCompositeObject>());
+            } else if (label.rfind("DLS") == 0 || label.rfind("SLS") == 0 ){
+                llvm::errs() << "found DLS/SLS object label: " << label << "\n";
             } else {
-                llvm::errs() << "unknown composite object label: " << o["label"].template get<std::string>() << "\n";
+                llvm::errs() << "unknown composite object label: " << label << "\n";
             }
         }
 
@@ -284,6 +284,10 @@ class SMG {
     }
 
   public:
+    std::vector<SMGValue> values;
+    std::vector<SMGObjectTypeVariant> objects;
+    std::vector<SMGEdge> edges;
+
     SMG(json &smg_json){
         load(smg_json);
         llvm::errs() << "Loaded " << values.size() << " values, " << objects.size() << " objects and " << edges.size() << " edges."  << "\n";
@@ -304,15 +308,13 @@ class SMG {
         std::unordered_map<llvm::Value *, SMGValue *> valueMap = getValueMap();
         for (auto mapping : valueMap){
             std::vector<std::pair<llvm::Value*, int>> PTSet;
-            llvm::errs() << "Getting pointsTo for " << *mapping.first << "\n";
             for (auto val : values){
                 if (hasEdge(mapping.second->id, val.id) && val.is_var){
                     PTSet.push_back(std::make_pair(val.var.llvmVal, getEdgeOffset(mapping.second->id, val.id)));
-                    llvm::errs() << "Adding into points to set " << *val.var.llvmVal << "\n";
                 }
             }
             // Unsure how much this makes sense
-            PTSet.push_back(std::make_pair(mapping.first, 0));
+            // PTSet.push_back(std::make_pair(mapping.first, 0));
             pointsToSets[mapping.first] = PTSet;
         }
         return pointsToSets;
@@ -436,8 +438,11 @@ class SMG {
         auto val_it = values.begin();
         while (val_it != values.end()){
             auto val = *val_it;
+            int val_id = val.id;
+            // TODO: keep ints?
             if (val.label == "int" || val.label == "int_range" || val.label == "real" || val.label == "str"){
                 values.erase(val_it);
+                edges.erase(std::find_if(edges.begin(), edges.end(), [&val_id](SMGEdge e){return e.to == val_id;}));
             } else {
                 ++val_it;
             }
@@ -469,6 +474,7 @@ class SMG {
                     val.is_var = true;
                     val.var = var;
 
+                    // TODO: I'm not sure why I put this here twice but it doesn't work without either
                     edges.erase(std::find_if(edges.begin(), edges.end(), [&val_id](SMGEdge e){return e.to == val_id && e.from == val_id;}));
                     objects.erase(it);
                     edges.erase(std::find_if(edges.begin(), edges.end(), [&val_id](SMGEdge e){return e.to == val_id && e.from == val_id;}));
@@ -504,6 +510,7 @@ class SMG {
 
             objects.erase(it);
             edges.erase(std::find_if(edges.begin(), edges.end(), [&obj_id,&val_id](SMGEdge e){return e.to == obj_id && e.from == val_id;}));
+            replaceEdgeTargets(obj_id, val_id);
         }
         llvm::errs() << "Done merging values (" << values.size() << ")  objects (" << objects.size() << ")\n";
     }
@@ -685,8 +692,8 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
                     const llvm::LoadInst *LI = llvm::cast <llvm::LoadInst>(llvmVal);
                     auto operand = LI->getPointerOperand();
                     if (operand == PTSet.first){
-                        auto operand_nodes = builder->getNodes(operand);
-                        for (auto node : *operand_nodes){
+                        //auto operand_nodes = builder->getNodes(operand);
+                        for (auto node : nodes){
                             if (node->doesPointsTo(node, 0)){
                                 llvm::errs() << "huh\n";
                             }
@@ -700,6 +707,29 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
             }
         }
         return;
+    }
+
+    void dumpSMG(SMG *smg){
+        for (auto obj : smg->objects){
+            llvm::errs() << "obj: " << objectVariantGetId(obj) << "\n";
+        }
+        for (auto val : smg->values){
+            llvm::errs() << "val: " << val.id << ", ";
+            llvm::errs() << val.label << "\n";
+        }
+        for (auto edge : smg->edges){
+            llvm::errs() << "edge: "<<  edge.from << ", " << edge.to << ", " << edge.off << "\n";
+        }
+    }
+
+    void dumpSMGPointsTo(SMG *smg){
+        std::unordered_map<llvm::Value *, std::vector<std::pair<llvm::Value*, int>>> pointsToSets = smg->getPointsToSets();
+        for (auto PTSet : pointsToSets){
+            llvm::errs() << "SMG points to info:" << *PTSet.first << "\n";
+            for (auto ptPair : PTSet.second){
+                llvm::errs() << "                 ->" << *ptPair.first << " + " << ptPair.second << "\n";
+            }
+        }
     }
 
     bool run() override {
@@ -723,16 +753,20 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
         smg->simplify();
         llvm::errs() << "Done simplifying" << "\n";
 
+        dumpSMG(smg);
+        dumpSMGPointsTo(smg);
         llvm::errs() << "Initialising a DG points-to object (running DG pta)" << "\n";
         //_pta = new SMGPointsTo(smg, _module);
         _dg_pta->run();
         llvm::errs() << "Done initialising a DG points-to object" << "\n";
 
+        /*
         llvm::errs() << "Filtering points-to sets" << "\n";
         PointerGraph *pg = _dg_pta->getPS();
         LLVMPointerGraphBuilder *builder = _dg_pta->getBuilder();
         filterPointerGraph(pg, builder, smg);
 
+        */
         DBG_SECTION_END(pta, "Done running SMG pointer analysis");
         return true;
     }
