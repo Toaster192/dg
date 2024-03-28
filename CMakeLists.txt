@@ -95,8 +95,11 @@ if (LLVM_DG)
 
 	# LLVM 10 and newer require at least c++14 standard
 	if (${LLVM_PACKAGE_VERSION} VERSION_GREATER "9.0")
-		set(CMAKE_CXX_STANDARD 14)
-		option(USE_CXX14 "Use C++14 standard" ON)
+		# kinst - change this to 17 to use variant
+		#set(CMAKE_CXX_STANDARD 14)
+		#option(USE_CXX14 "Use C++14 standard" ON)
+		set(CMAKE_CXX_STANDARD 17)
+		option(USE_CXX17 "Use C++17 standard" ON)
 	endif()
 endif(LLVM_DG)
 
@@ -188,7 +191,9 @@ endif()
 # put the -std=c++11 (-std=c++14) or -std=gnu++11 (-std=gnu++14)
 # to the flags on some systems.
 # For the -fno-rtti: LLVM still got problems with turning RTTI off...
-if (USE_CXX14)
+if (USE_CXX17)
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
+elseif (USE_CXX14)
 	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14")
 else()
 	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")

@@ -247,6 +247,19 @@ class PSNode : public SubgraphNode<PSNode> {
         return doesPointsTo(Pointer(n, o));
     }
 
+    void filterPointsTo(std::vector<std::pair<PSNode*, int>> expected) {
+        PointsToSetT newPointsTo;
+        for (std::pair<PSNode*, int> pts : expected){
+            if (doesPointsTo(pts.first, pts.second)){
+                newPointsTo.add(Pointer(pts.first, pts.second));
+            }
+        }
+        pointsTo.clear();
+        for (auto set : newPointsTo){
+            pointsTo.add(set);
+        }
+    }
+
     ///
     // Strip all casts from the node as the
     // casts do not transform the pointer in any way
