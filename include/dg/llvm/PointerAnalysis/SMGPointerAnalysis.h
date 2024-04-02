@@ -53,7 +53,7 @@ class SMGVarObject : public SMGGenericObject{
     std::string varLocInsn;
     int varLocLine;
     int varLocColumn;
-    llvm::Value* llvmVal{nullptr};
+    const llvm::Value* llvmVal{nullptr};
 
     SMGVarObject(){}
 };
@@ -156,6 +156,11 @@ class SMGValue{
     int size_low;
     bool is_var{false};
     SMGVarObject var;
+    bool is_mem{false};
+    std::string memLocFile;
+    int memLocLine;
+    int memLocColumn;
+    const llvm::Value* llvmVal{nullptr};
 
     SMGValue(){}
 
@@ -179,6 +184,21 @@ void from_json(const json& j, SMGValue& v) {
     }
 
     v.is_var = false;
+    v.is_mem = false;
+
+    if (j.find("loc") != j.end()){
+        json l = j.at("loc");
+        l.at("file").get_to(v.memLocFile);
+        l.at("line").get_to(v.memLocLine);
+        // TODO: remove
+        // maybe save the line the function starts at in smg and use the difference?
+        // compensate for the extra import in the predator input source code
+        v.memLocLine = v.memLocLine - 1;
+        l.at("column").get_to(v.memLocColumn);
+        //l.at("insn").get_to(v.memLocInsn);
+        v.is_mem = true;
+    }
+    v.llvmVal = nullptr;
 }
 
 class SMGEdge{
@@ -293,24 +313,30 @@ class SMG {
         llvm::errs() << "Loaded " << values.size() << " values, " << objects.size() << " objects and " << edges.size() << " edges."  << "\n";
     }
 
-    std::unordered_map<llvm::Value *, SMGValue *> getValueMap(){
-        std::unordered_map<llvm::Value *, SMGValue *> valueMap;
+    std::unordered_map<const llvm::Value *, SMGValue *> getValueMap(){
+        std::unordered_map<const llvm::Value *, SMGValue *> valueMap;
         for (auto &val : values){
             if (val.is_var){
                 valueMap[val.var.llvmVal] = &val;
+            } else if (val.is_mem){
+                valueMap[val.llvmVal] = &val;
             }
         }
         return valueMap;
     }
 
-    std::unordered_map<llvm::Value *, std::vector<std::pair<llvm::Value*, int>>> getPointsToSets(){
-        std::unordered_map<llvm::Value *, std::vector<std::pair<llvm::Value*, int>>> pointsToSets;
-        std::unordered_map<llvm::Value *, SMGValue *> valueMap = getValueMap();
+    std::unordered_map<const llvm::Value *, std::vector<std::pair<const llvm::Value*, int>>> getPointsToSets(){
+        std::unordered_map<const llvm::Value *, std::vector<std::pair<const llvm::Value*, int>>> pointsToSets;
+        std::unordered_map<const llvm::Value *, SMGValue *> valueMap = getValueMap();
         for (auto mapping : valueMap){
-            std::vector<std::pair<llvm::Value*, int>> PTSet;
+            std::vector<std::pair<const llvm::Value*, int>> PTSet;
             for (auto val : values){
-                if (hasEdge(mapping.second->id, val.id) && val.is_var){
-                    PTSet.push_back(std::make_pair(val.var.llvmVal, getEdgeOffset(mapping.second->id, val.id)));
+                if (hasEdge(mapping.second->id, val.id)){
+                    if (val.is_var){
+                        PTSet.push_back(std::make_pair(val.var.llvmVal, getEdgeOffset(mapping.second->id, val.id)));
+                    } else if (val.is_mem){
+                        PTSet.push_back(std::make_pair(val.llvmVal, getEdgeOffset(mapping.second->id, val.id)));
+                    }
                 }
             }
             // Unsure how much this makes sense
@@ -328,13 +354,19 @@ class SMG {
                 vars.push_back(&var);
             }
         }
+        std::vector<SMGValue*> mems;
+        for (auto &val : values){
+            if (val.is_mem){
+                mems.push_back(&val);
+            }
+        }
         for (auto &F : *m){
             if (func_name != "" && F.getName() != func_name){
                 continue;
             }
             for (llvm::const_inst_iterator I = llvm::inst_begin(F), E = llvm::inst_end(F); I != E; ++I){
-                //llvm::errs() << "inst: " << *I  << "\n";
-                //llvm::errs() << "operand 0: " << *I->getOperand(0) << "\n";
+                llvm::errs() << "inst: " << *I  << "\n";
+                llvm::errs() << "operand 0: " << *I->getOperand(0) << "\n";
                 llvm::DebugLoc dbg = I->getDebugLoc();
                 if (!dbg){
                     continue;
@@ -344,7 +376,7 @@ class SMG {
                         llvm::Metadata *Meta = llvm::cast<llvm::MetadataAsValue>(I->getOperand(0))->getMetadata();
                         // gambing a bit but should be fine
                         //if(llvm::isa<llvm::ValueAsMetadata>(Meta)){
-                        llvm::Value *V = llvm::cast <llvm::ValueAsMetadata>(Meta)->getValue();
+                        const llvm::Value *V = llvm::cast <llvm::ValueAsMetadata>(Meta)->getValue();
                         var->llvmVal = V;
                         //llvm::errs() << "val: " << *var->llvmVal  << "\n";
                         auto it = std::find(vars.begin(), vars.end(), var);
@@ -352,10 +384,23 @@ class SMG {
                         break;
                     }
                 }
+                for (auto &val : mems){
+                    if (dbg.getLine() == (unsigned) val->memLocLine && dbg.getCol() == (unsigned) val->memLocColumn){
+                        const llvm::Value *V = llvm::dyn_cast<const llvm::Value>(&(*I));
+                        val->llvmVal = V;
+                        llvm::errs() << "val: " << *val->llvmVal  << "\n";
+                        auto it = std::find(mems.begin(), mems.end(), val);
+                        mems.erase(it);
+                        break;
+                    }
+                }
             }
         }
         if (vars.size()){
             llvm::errs() << "Not every SMG variable mapped!" << "\n";
+        }
+        if (mems.size()){
+            llvm::errs() << "Not every SMG heap object mapped!" << "\n";
         }
     }
 
@@ -587,9 +632,9 @@ class SMGPointsTo {
 // Integration of pointer analysis from predator SMG
 class SMGPointerAnalysis : public LLVMPointerAnalysis {
     const llvm::Module *_module{nullptr};
-    DGLLVMPointerAnalysis *_dg_pta;
-    SMGPointsTo *_pta;
     const char *_smg_json_filename{nullptr};
+    SMG *_smg{nullptr};
+    std::unordered_map<const llvm::Value *, std::vector<std::pair<const llvm::Value*, int>>> _pts;
 
     /*
     PointsTo &getUnknownPTSet() const {
@@ -607,11 +652,7 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
   public:
     SMGPointerAnalysis(const llvm::Module *M,
                        const LLVMPointerAnalysisOptions &opts)
-            : LLVMPointerAnalysis(opts), _module(M), _smg_json_filename(opts.smg_json_filename.c_str()) {
-        LLVMPointerAnalysisOptions newOpts = opts;
-        newOpts.analysisType = LLVMPointerAnalysisOptions::AnalysisType::fi;
-        _dg_pta = new DGLLVMPointerAnalysis(M, newOpts);
-    }
+            : LLVMPointerAnalysis(opts), _module(M), _smg_json_filename(opts.smg_json_filename.c_str()) {}
 
     ~SMGPointerAnalysis() override {
         // _svfModule overtook the ownership of llvm::Module,
@@ -661,7 +702,8 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
         return _dg_pta->getLLVMPointsToChecked(val);
     }
 
-    std::vector<std::pair<PSNode*, int>> mapPointsToToPSNodes(LLVMPointerGraphBuilder *builder, std::vector<std::pair<llvm::Value*, int>> pointsToSet){
+    /*
+    std::vector<std::pair<PSNode*, int>> mapPointsToToPSNodes(LLVMPointerGraphBuilder *builder, std::vector<std::pair<const llvm::Value*, int>> pointsToSet){
         std::vector<std::pair<PSNode*, int>> mappedSets;
 
         for (auto PTPair: pointsToSet){
@@ -675,7 +717,7 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
     }
 
     void filterPointerGraph(PointerGraph *pg, LLVMPointerGraphBuilder *builder, SMG *smg){
-        std::unordered_map<llvm::Value *, std::vector<std::pair<llvm::Value*, int>>> pointsToSets = smg->getPointsToSets();
+        std::unordered_map<const llvm::Value *, std::vector<std::pair<const llvm::Value*, int>>> pointsToSets = smg->getPointsToSets();
         auto nodesMap = builder->getNodesMap();
 
         for (auto PTSet : pointsToSets){
@@ -708,6 +750,7 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
         }
         return;
     }
+    */
 
     void dumpSMG(SMG *smg){
         for (auto obj : smg->objects){
@@ -723,7 +766,7 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
     }
 
     void dumpSMGPointsTo(SMG *smg){
-        std::unordered_map<llvm::Value *, std::vector<std::pair<llvm::Value*, int>>> pointsToSets = smg->getPointsToSets();
+        std::unordered_map<const llvm::Value *, std::vector<std::pair<const llvm::Value*, int>>> pointsToSets = smg->getPointsToSets();
         for (auto PTSet : pointsToSets){
             llvm::errs() << "SMG points to info:" << *PTSet.first << "\n";
             for (auto ptPair : PTSet.second){
@@ -755,17 +798,19 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
 
         dumpSMG(smg);
         dumpSMGPointsTo(smg);
-        llvm::errs() << "Initialising a DG points-to object (running DG pta)" << "\n";
+
+        _pts = smg->getPointsToSets();
+
         //_pta = new SMGPointsTo(smg, _module);
+        /*
+        llvm::errs() << "Initialising a DG points-to object (running DG pta)" << "\n";
         _dg_pta->run();
         llvm::errs() << "Done initialising a DG points-to object" << "\n";
 
-        /*
         llvm::errs() << "Filtering points-to sets" << "\n";
         PointerGraph *pg = _dg_pta->getPS();
         LLVMPointerGraphBuilder *builder = _dg_pta->getBuilder();
         filterPointerGraph(pg, builder, smg);
-
         */
         DBG_SECTION_END(pta, "Done running SMG pointer analysis");
         return true;
