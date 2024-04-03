@@ -886,7 +886,7 @@ int main(int argc, char *argv[]) {
                         continue;
                     }
 
-		            llvm::errs() << "Getting points to for Instruction: " << I << "\n";
+		            //llvm::errs() << "Getting points to for Instruction: " << I << "\n";
                     auto pts = llvmpta->getLLVMPointsTo(&I);
                     if (pts.isUnknownSingleton()) {
                         // do not dump the "no-information"

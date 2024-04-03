@@ -28,6 +28,9 @@ using pta::Pointer;
 using pta::PointerGraph;
 using pta::LLVMPointerGraphBuilder;
 
+using SMGPTASet = std::vector<LLVMPointer>;
+using SMGPTA = std::unordered_map<const llvm::Value *, SMGPTASet>;
+
 class SMGGenericObject{
   public:
     int id;
@@ -53,7 +56,7 @@ class SMGVarObject : public SMGGenericObject{
     std::string varLocInsn;
     int varLocLine;
     int varLocColumn;
-    const llvm::Value* llvmVal{nullptr};
+    llvm::Value* llvmVal{nullptr};
 
     SMGVarObject(){}
 };
@@ -160,7 +163,7 @@ class SMGValue{
     std::string memLocFile;
     int memLocLine;
     int memLocColumn;
-    const llvm::Value* llvmVal{nullptr};
+    llvm::Value* llvmVal{nullptr};
 
     SMGValue(){}
 
@@ -313,8 +316,8 @@ class SMG {
         llvm::errs() << "Loaded " << values.size() << " values, " << objects.size() << " objects and " << edges.size() << " edges."  << "\n";
     }
 
-    std::unordered_map<const llvm::Value *, SMGValue *> getValueMap(){
-        std::unordered_map<const llvm::Value *, SMGValue *> valueMap;
+    std::unordered_map<llvm::Value *, SMGValue *> getValueMap(){
+        std::unordered_map<llvm::Value *, SMGValue *> valueMap;
         for (auto &val : values){
             if (val.is_var){
                 valueMap[val.var.llvmVal] = &val;
@@ -325,18 +328,21 @@ class SMG {
         return valueMap;
     }
 
-    std::unordered_map<const llvm::Value *, std::vector<std::pair<const llvm::Value*, int>>> getPointsToSets(){
-        std::unordered_map<const llvm::Value *, std::vector<std::pair<const llvm::Value*, int>>> pointsToSets;
-        std::unordered_map<const llvm::Value *, SMGValue *> valueMap = getValueMap();
+    SMGPTA getPointsToSets(){
+        SMGPTA pointsToSets;
+        std::unordered_map<llvm::Value *, SMGValue *> valueMap = getValueMap();
         for (auto mapping : valueMap){
-            std::vector<std::pair<const llvm::Value*, int>> PTSet;
+            SMGPTASet PTSet;
             for (auto val : values){
                 if (hasEdge(mapping.second->id, val.id)){
+                    llvm::Value* value = nullptr;
                     if (val.is_var){
-                        PTSet.push_back(std::make_pair(val.var.llvmVal, getEdgeOffset(mapping.second->id, val.id)));
+                        value = val.var.llvmVal; 
                     } else if (val.is_mem){
-                        PTSet.push_back(std::make_pair(val.llvmVal, getEdgeOffset(mapping.second->id, val.id)));
+                        value = val.llvmVal; 
                     }
+                    Offset offset(getEdgeOffset(mapping.second->id, val.id));
+                    PTSet.push_back(LLVMPointer(value, offset));
                 }
             }
             // Unsure how much this makes sense
@@ -346,7 +352,7 @@ class SMG {
         return pointsToSets;
     }
 
-    void mapLLVMValues(const llvm::Module *m, std::string func_name){
+    void mapLLVMValues(llvm::Module *m, std::string func_name){
         std::vector<SMGVarObject*> vars;
         for (auto &obj : objects){
             if (std::holds_alternative<SMGVarObject>(obj)){
@@ -364,9 +370,9 @@ class SMG {
             if (func_name != "" && F.getName() != func_name){
                 continue;
             }
-            for (llvm::const_inst_iterator I = llvm::inst_begin(F), E = llvm::inst_end(F); I != E; ++I){
-                llvm::errs() << "inst: " << *I  << "\n";
-                llvm::errs() << "operand 0: " << *I->getOperand(0) << "\n";
+            for (llvm::inst_iterator I = llvm::inst_begin(F), E = llvm::inst_end(F); I != E; ++I){
+                //llvm::errs() << "inst: " << *I  << "\n";
+                //llvm::errs() << "operand 0: " << *I->getOperand(0) << "\n";
                 llvm::DebugLoc dbg = I->getDebugLoc();
                 if (!dbg){
                     continue;
@@ -376,7 +382,7 @@ class SMG {
                         llvm::Metadata *Meta = llvm::cast<llvm::MetadataAsValue>(I->getOperand(0))->getMetadata();
                         // gambing a bit but should be fine
                         //if(llvm::isa<llvm::ValueAsMetadata>(Meta)){
-                        const llvm::Value *V = llvm::cast <llvm::ValueAsMetadata>(Meta)->getValue();
+                        llvm::Value *V = llvm::cast <llvm::ValueAsMetadata>(Meta)->getValue();
                         var->llvmVal = V;
                         //llvm::errs() << "val: " << *var->llvmVal  << "\n";
                         auto it = std::find(vars.begin(), vars.end(), var);
@@ -386,7 +392,7 @@ class SMG {
                 }
                 for (auto &val : mems){
                     if (dbg.getLine() == (unsigned) val->memLocLine && dbg.getCol() == (unsigned) val->memLocColumn){
-                        const llvm::Value *V = llvm::dyn_cast<const llvm::Value>(&(*I));
+                        llvm::Value *V = llvm::dyn_cast<llvm::Value>(&(*I));
                         val->llvmVal = V;
                         llvm::errs() << "val: " << *val->llvmVal  << "\n";
                         auto it = std::find(mems.begin(), mems.end(), val);
@@ -599,42 +605,111 @@ class SMG {
         llvm::errs() << "Done removing empty objects at " << objects.size() << ".\n";
     }
 
-    void filterEdges(){
-         
-    }
-
     void simplify(){
         simplifyCompositeObjects();
         simplifyValues();
         simplifyEmptyObjects();
-        filterEdges();
         llvm::errs() << "Simplified to " << values.size() << " values, "
                      << objects.size() << " objects, "
                      << edges.size() << " edges.\n";
     }
+};
+
+class SMGLLVMPointsToSet : public LLVMPointsToSetImplTemplate<SMGPTASet> {
     /*
-    SMGNode *getSMGNode(int id){
-        (void) id;
+    size_t _position{0};
+
+    llvm::Value *_getValue(unsigned id) const {
+        auto *pagnode = _pag->getPAGNode(id);
+        if (pagnode->hasValue())
+            return const_cast<llvm::Value *>(pagnode->getValue());
+
+        // for debugging right now
+        llvm::errs() << "[SVF] No value in PAG NODE\n";
+        llvm::errs() << *pagnode << "\n";
         return nullptr;
+    }
+
+    void _findNextReal() override {
+        while (it != PTSet.end()) {
+            if (_pag->getPAGNode(*it)->hasValue())
+                break;
+
+            // else
+            //     llvm::errs() << "no val" << *_pag->getPAGNode(*it) << "\n";
+
+            ++it;
+            ++_position;
+        }
+    }
+    */
+    void _findNextReal() override {
+        while (it != PTSet.end()) {
+            if (true){ // TODO check for unknowns and such
+                break;
+            }
+            ++it;
+        }
+    }
+
+  public:
+    SMGLLVMPointsToSet(SMGPTASet &S)
+            : LLVMPointsToSetImplTemplate(std::move(S)) {
+        initialize_iterator();
+    }
+
+    /*
+    bool hasUnknown() const override {
+        return PTSet.test(_pag->getBlackHoleNode());
+    }
+
+    bool hasNull() const override { return PTSet.test(_pag->getNullPtr()); }
+
+    bool hasNullWithOffset() const override {
+        // we are field-insensitive now...
+        return hasNull();
+    }
+
+    bool hasInvalidated() const override { return false; }
+    size_t size() const override { return PTSet.count(); }
+
+    LLVMPointer getKnownSingleton() const override {
+        assert(isKnownSingleton());
+        return {_getValue(*PTSet.begin()), Offset::UNKNOWN};
     }
     */
 
-};
-class SMGPointsTo {
-    const SMG *_smg{nullptr};
-    const llvm::Module *_module{nullptr};
+    // TODO these methods need proper implementation
+    bool hasUnknown() const override {
+        return false;
+    }
 
-  public:
-    SMGPointsTo(const SMG *smg, const llvm::Module *M) : _smg(smg), _module(M) {}
+    bool hasNull() const override { return false; }
 
+    bool hasNullWithOffset() const override {
+        return hasNull();
+    }
+
+    bool hasInvalidated() const override { return false; }
+    size_t size() const override { return PTSet.size(); }
+
+    LLVMPointer getKnownSingleton() const override {
+        assert(isKnownSingleton());
+        return *PTSet.begin();
+    }
+
+    LLVMPointer get() const override {
+        assert(it != PTSet.end() && "Dereferenced end() iterator");
+        return *it;
+    }
 };
 ///
 // Integration of pointer analysis from predator SMG
 class SMGPointerAnalysis : public LLVMPointerAnalysis {
-    const llvm::Module *_module{nullptr};
+    llvm::Module *_module{nullptr};
     const char *_smg_json_filename{nullptr};
-    SMG *_smg{nullptr};
-    std::unordered_map<const llvm::Value *, std::vector<std::pair<const llvm::Value*, int>>> _pts;
+    SMGPTA _pts;
+    SMGPTA _smg_pts;
 
     /*
     PointsTo &getUnknownPTSet() const {
@@ -645,12 +720,13 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
     }
 
     */
-    LLVMPointsToSet mapSMGPointsTo() {
-        return nullptr;
+    LLVMPointsToSet mapSMGPointsTo(SMGPTASet S) {
+        auto *pts = new SMGLLVMPointsToSet(S);
+        return pts->toLLVMPointsToSet();
     }
 
   public:
-    SMGPointerAnalysis(const llvm::Module *M,
+    SMGPointerAnalysis(llvm::Module *M,
                        const LLVMPointerAnalysisOptions &opts)
             : LLVMPointerAnalysis(opts), _module(M), _smg_json_filename(opts.smg_json_filename.c_str()) {}
 
@@ -667,7 +743,8 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
         auto pts = _pta->getPts(smg->getValueNode(val));
         return !pts.empty();
         */
-        return _dg_pta->hasPointsTo(val);
+        //return _dg_pta->hasPointsTo(val);
+        return _pts.count(val);
     }
 
     ///
@@ -683,7 +760,11 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
         auto pts = _pta->getPts(smg->getValueNode(val));
         return mapSMGPointsTo();
         */
-        return _dg_pta->getLLVMPointsTo(val);
+        //return _dg_pta->getLLVMPointsTo(val);
+        if (!hasPointsTo(val)){
+            return mapSMGPointsTo(SMGPTASet());
+        }
+        return mapSMGPointsTo(_pts[val]);
     }
 
     ///
@@ -699,7 +780,8 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
         return {!pts.empty(), mapSMGPointsTo()};
         return {false, mapSMGPointsTo()};
         */
-        return _dg_pta->getLLVMPointsToChecked(val);
+        //return _dg_pta->getLLVMPointsToChecked(val);
+        return {hasPointsTo(val), getLLVMPointsTo(val)};
     }
 
     /*
@@ -752,27 +834,67 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
     }
     */
 
-    void dumpSMG(SMG *smg){
-        for (auto obj : smg->objects){
+    void dumpSMG(SMG smg){
+        for (auto obj : smg.objects){
             llvm::errs() << "obj: " << objectVariantGetId(obj) << "\n";
         }
-        for (auto val : smg->values){
+        for (auto val : smg.values){
             llvm::errs() << "val: " << val.id << ", ";
             llvm::errs() << val.label << "\n";
         }
-        for (auto edge : smg->edges){
+        for (auto edge : smg.edges){
             llvm::errs() << "edge: "<<  edge.from << ", " << edge.to << ", " << edge.off << "\n";
         }
     }
 
-    void dumpSMGPointsTo(SMG *smg){
-        std::unordered_map<const llvm::Value *, std::vector<std::pair<const llvm::Value*, int>>> pointsToSets = smg->getPointsToSets();
+    void dumpSMGPointsTo(SMG smg){
+        SMGPTA pointsToSets = smg.getPointsToSets();
         for (auto PTSet : pointsToSets){
             llvm::errs() << "SMG points to info:" << *PTSet.first << "\n";
             for (auto ptPair : PTSet.second){
-                llvm::errs() << "                 ->" << *ptPair.first << " + " << ptPair.second << "\n";
+                llvm::errs() << "                 ->" << *ptPair.value << " + " << *ptPair.offset << "\n";
             }
         }
+    }
+
+    SMGPTA calculateAssistedPTA(){
+        SMGPTA pts;
+        for (auto &F : *_module){
+            for (llvm::inst_iterator I = llvm::inst_begin(F), E = llvm::inst_end(F); I != E; ++I){
+                llvm::errs() << "inst: " << *I  << "\n";
+                llvm::Value *V = llvm::dyn_cast<llvm::Value>(&(*I));
+                if (llvm::isa <llvm::LoadInst> (*I)){
+                    llvm::Value *op = I->getOperand(0);
+                    // TODO: Figure out how to use all indexes, not just the first of every set
+                    if (_smg_pts.count(op)){
+                        pts[V].push_back(_smg_pts[op][0]);
+                    } else if (_smg_pts.count(pts[op][0].value)) {
+                        pts[V].push_back(_smg_pts[pts[op][0].value][0]);
+                    } else {
+                        llvm::errs() << "Fix load instruction pta " << *I  << "\n";
+                    }
+                } else if (llvm::isa <llvm::AllocaInst> (*I)){
+                    pts[V].push_back(LLVMPointer(V, Offset(0)));
+                } else if (llvm::isa <llvm::CastInst> (*I)){
+                    pts[V].push_back(LLVMPointer(I->getOperand(0), Offset(0)));
+                } else if (llvm::isa <llvm::CallInst> (*I)){
+                    if (_smg_pts.count(V)){
+                        pts[V].push_back(LLVMPointer(V, Offset(0)));
+                    } else {
+                        continue;
+                    }
+                } else if (llvm::isa <llvm::StoreInst> (*I)){
+                    continue;
+                } else if (llvm::isa <llvm::ReturnInst> (*I)){
+                    continue;
+                } else {
+                    llvm::errs() << "Unknown type of instruction? " << *I  << "\n";
+                    continue;
+                }
+                llvm::errs() << "-> " << *pts[V][0].value << "\n";
+            }
+        }
+        return pts;
     }
 
     bool run() override {
@@ -785,21 +907,24 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
         llvm::errs() << "Done parsing the json file" << "\n";
 
         llvm::errs() << "Parsing the json object into SMG" << "\n";
-        SMG *smg = new SMG(smg_json);
+        SMG smg = SMG(smg_json);
         llvm::errs() << "Done parsing the SMG" << "\n";
 
         llvm::errs() << "Mapping variables in SMG to LLVM Values" << "\n";
-        smg->mapLLVMValues(_module, smg_json["metadata"]["func_name"]);
+        smg.mapLLVMValues(_module, smg_json["metadata"]["func_name"]);
         llvm::errs() << "Done Mapping variables" << "\n";
 
         llvm::errs() << "Simplifying the SMG into a points-to graph" << "\n";
-        smg->simplify();
+        smg.simplify();
         llvm::errs() << "Done simplifying" << "\n";
 
         dumpSMG(smg);
         dumpSMGPointsTo(smg);
 
-        _pts = smg->getPointsToSets();
+        llvm::errs() << "Using SMG points-to information to calculate the DG expected sets." << "\n";
+        _smg_pts = smg.getPointsToSets();
+
+        _pts = calculateAssistedPTA();
 
         //_pta = new SMGPointsTo(smg, _module);
         /*
