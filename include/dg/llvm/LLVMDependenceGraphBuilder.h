@@ -17,6 +17,7 @@
 #ifdef HAVE_SVF
 #include "dg/llvm/PointerAnalysis/SVFPointerAnalysis.h"
 #endif
+#include "dg/llvm/PointerAnalysis/SMGPointerAnalysis.h"
 #include "dg/Offset.h"
 #include "dg/PointerAnalysis/Pointer.h"
 #include "dg/PointerAnalysis/PointerAnalysisFI.h"
@@ -131,7 +132,7 @@ class LLVMDependenceGraphBuilder {
               _CDA(new LLVMControlDependenceAnalysis(M, _options.CDAOptions)),
               _dg(new LLVMDependenceGraph(opts.threads)),
               _controlFlowGraph(
-                      _options.threads && !_options.PTAOptions.isSVF()
+                      _options.threads && !_options.PTAOptions.isSVF() && !_options.PTAOptions.isSMG()
                               ? // check SVF due to the static cast...
                               new ControlFlowGraph(
                                       static_cast<DGLLVMPointerAnalysis *>(
@@ -146,6 +147,9 @@ class LLVMDependenceGraphBuilder {
         if (_options.PTAOptions.isSVF())
             return new SVFPointerAnalysis(_M, _options.PTAOptions);
 #endif
+        if (_options.PTAOptions.isSMG()){
+            return new SMGPointerAnalysis(_M, _options.PTAOptions);
+        }
 
         return new DGLLVMPointerAnalysis(_M, _options.PTAOptions);
     }
@@ -171,8 +175,8 @@ class LLVMDependenceGraphBuilder {
         _runControlDependenceAnalysis();
 
         if (_options.threads) {
-            if (_options.PTAOptions.isSVF()) {
-                assert(0 && "Threading needs the DG pointer analysis, SVF is "
+            if (_options.PTAOptions.isSVF() || _options.PTAOptions.isSMG()) {
+                assert(0 && "Threading needs the DG pointer analysis, SVF(/SMG) is "
                             "not supported yet");
                 abort();
             }

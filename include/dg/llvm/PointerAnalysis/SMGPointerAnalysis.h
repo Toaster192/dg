@@ -1,6 +1,13 @@
 #ifndef DG_SMG_POINTER_ANALYSIS_H_
 #define DG_SMG_POINTER_ANALYSIS_H_
+#include <set>
+#include <string>
+#include <string_view>
 #include <variant>
+#include <vector>
+#include <iostream>
+#include <fstream>
+#include <filesystem>
 #include <llvm/IR/DataLayout.h>
 #include <llvm/IR/DebugInfo.h>
 #include <llvm/IR/Function.h>
@@ -15,262 +22,31 @@
 #include "dg/llvm/PointerAnalysis/LLVMPointsToSet.h"
 #include "dg/llvm/PointerAnalysis/PointerAnalysis.h"
 #include "dg/llvm/PointerAnalysis/PointerGraph.h"
+#include "dg/llvm/PointerAnalysis/SMGObjects.h"
 
 #include "dg/util/debug.h"
 
 #include "json.hpp"
 
-namespace dg {
+namespace fs = std::filesystem;
 
 using json = nlohmann::json;
+
+namespace dg {
 
 using pta::Pointer;
 using pta::PointerGraph;
 using pta::LLVMPointerGraphBuilder;
 
-using SMGPTASet = std::vector<LLVMPointer>;
-using SMGPTA = std::unordered_map<const llvm::Value *, SMGPTASet>;
-
-class SMGGenericObject{
-  public:
-    int id;
-    std::string label;
-
-    SMGGenericObject(){}
-
-    virtual ~SMGGenericObject() = default;
-
-    bool operator==(const SMGGenericObject& other) const {return (id == other.id);}
-};
-
-void from_json(const json& j, SMGGenericObject& o) {
-    j.at("id").get_to(o.id);
-    j.at("label").get_to(o.label);
+static bool ends_with(std::string_view str, std::string_view suffix)
+{
+    return str.size() >= suffix.size() && str.compare(str.size()-suffix.size(), suffix.size(), suffix) == 0;
 }
 
-class SMGVarObject : public SMGGenericObject{
-  public:
-    std::string varName;
-    int varUID;
-    std::string varLocFile;
-    std::string varLocInsn;
-    int varLocLine;
-    int varLocColumn;
-    llvm::Value* llvmVal{nullptr};
-
-    SMGVarObject(){}
-};
-
-void from_json(const json& j, SMGVarObject& o) {
-    j.at("id").get_to(o.id);
-    j.at("label").get_to(o.label);
-
-    json v = j.at("value").at("var");
-    v.at("name").get_to(o.varName);
-    v.at("uid").get_to(o.varUID);
-
-    json l = j.at("value").at("loc");
-    l.at("file").get_to(o.varLocFile);
-    l.at("line").get_to(o.varLocLine);
-    // TODO: remove
-    // maybe save the line the function starts at in smg and use the difference?
-    // compensate for the extra import in the predator input source code
-    o.varLocLine = o.varLocLine - 1;
-    l.at("column").get_to(o.varLocColumn);
-    l.at("insn").get_to(o.varLocInsn);
-
-    o.llvmVal = nullptr;
+static bool starts_with(std::string_view str, std::string_view prefix)
+{
+    return str.size() >= prefix.size() && str.compare(0, prefix.size(), prefix) == 0;
 }
-
-class SMGRegionObject : public SMGGenericObject{
-  public:
-    int size_high;
-    int size_low;
-    // ignore value for now?
-
-    SMGRegionObject(){}
-};
-
-void from_json(const json& j, SMGRegionObject& o) {
-    j.at("id").get_to(o.id);
-    j.at("label").get_to(o.label);
-
-    j.at("size_low").get_to(o.size_low);
-    j.at("size_high").get_to(o.size_high);
-}
-
-class SMGEmptyObject : public SMGGenericObject{
-  public:
-    int size;
-    std::string placement;
-    // ignore value for now?
-
-    SMGEmptyObject(){}
-};
-
-void from_json(const json& j, SMGEmptyObject& o) {
-    j.at("id").get_to(o.id);
-    j.at("label").get_to(o.label);
-
-    if (j.find("size") != j.end()){
-        j.at("size").get_to(o.size);
-    }
-    if (j.find("placement") != j.end()){
-        j.at("placement").get_to(o.placement);
-    }
-}
-
-
-typedef std::variant<SMGGenericObject, SMGVarObject, SMGRegionObject, SMGEmptyObject> SMGSimpleObjectTypeVariant;
-
-class SMGRegionCompositeObject : public SMGGenericObject{
-  public:
-    std::vector<SMGSimpleObjectTypeVariant> objects;
-
-    SMGRegionCompositeObject(){}
-};
-
-void from_json(const json& j, SMGRegionCompositeObject& c) {
-    j.at("id").get_to(c.id);
-    j.at("label").get_to(c.label);
-    for (auto o : j["objects"]){
-        if (o["label"] == "empty"){
-            c.objects.push_back(o.template get<SMGEmptyObject>());
-        } else if (o["label"] == "SC_ON_STACK" || o["label"] == "SC_ON_HEAP"){
-            c.objects.push_back(o.template get<SMGRegionObject>());
-        } else {
-            llvm::errs() << "unknown object label: " << o["label"].template get<std::string>() << "\n";
-        }
-    }
-}
-
-class SMGValue{
-  public:
-    int id;
-    std::string label;
-    int obj{0};
-    int offset_low{0};
-    int offset_high{0};
-    bool lonely{false};
-    // Don't care about lonely, value, iid?
-
-    std::string memoryLocation;
-    int size_high;
-    int size_low;
-    bool is_var{false};
-    SMGVarObject var;
-    bool is_mem{false};
-    std::string memLocFile;
-    int memLocLine;
-    int memLocColumn;
-    llvm::Value* llvmVal{nullptr};
-
-    SMGValue(){}
-
-    bool operator==(const SMGValue& other) const {return (id == other.id);}
-};
-
-void from_json(const json& j, SMGValue& v) {
-    j.at("id").get_to(v.id);
-    j.at("label").get_to(v.label);
-    if (j.find("obj") != j.end()){
-        j.at("obj").get_to(v.obj);
-    }
-    if (j.find("offset_low") != j.end()){
-        j.at("offset_low").get_to(v.offset_low);
-    }
-    if (j.find("offset_high") != j.end()){
-        j.at("offset_high").get_to(v.offset_high);
-    }
-    if (j.find("lonely") != j.end()){
-        j.at("lonely").get_to(v.lonely);
-    }
-
-    v.is_var = false;
-    v.is_mem = false;
-
-    if (j.find("loc") != j.end()){
-        json l = j.at("loc");
-        l.at("file").get_to(v.memLocFile);
-        l.at("line").get_to(v.memLocLine);
-        // TODO: remove
-        // maybe save the line the function starts at in smg and use the difference?
-        // compensate for the extra import in the predator input source code
-        v.memLocLine = v.memLocLine - 1;
-        l.at("column").get_to(v.memLocColumn);
-        //l.at("insn").get_to(v.memLocInsn);
-        v.is_mem = true;
-    }
-    v.llvmVal = nullptr;
-}
-
-class SMGEdge{
-  public:
-    int from;
-    int to;
-    std::string label;
-    int off{0};
-
-    SMGEdge(){}
-
-    bool operator==(const SMGEdge& other) const {return (from == other.from && to == other.to);}
-};
-
-void from_json(const json& j, SMGEdge& e) {
-    j.at("from").get_to(e.from);
-    j.at("to").get_to(e.to);
-    j.at("label").get_to(e.label);
-    if (j.find("off") != j.end()){
-        j.at("off").get_to(e.off);
-    }
-}
-
-typedef std::variant<SMGGenericObject, SMGVarObject, SMGRegionObject, SMGEmptyObject, SMGRegionCompositeObject> SMGObjectTypeVariant;
-
-int objectVariantGetId(SMGObjectTypeVariant obj){
-    // TODO simplify this using templates or something
-    if (std::holds_alternative<SMGRegionCompositeObject>(obj)){
-        return std::get<SMGRegionCompositeObject>(obj).id;
-    } else if (std::holds_alternative<SMGRegionObject>(obj)){
-        return std::get<SMGRegionObject>(obj).id;
-    } else if (std::holds_alternative<SMGVarObject>(obj)){
-        return std::get<SMGVarObject>(obj).id;
-    } else if (std::holds_alternative<SMGEmptyObject>(obj)){
-        return std::get<SMGEmptyObject>(obj).id;
-    } else if (std::holds_alternative<SMGGenericObject>(obj)){
-        return std::get<SMGGenericObject>(obj).id;
-    } else {
-        llvm::errs() << "Unknown object found in objectVariantGetId" << "\n";
-        return -1;
-    }
-}
-
-std::vector<SMGObjectTypeVariant>::iterator getObjectById(int id, std::vector<SMGObjectTypeVariant> &objects){
-    std::vector<SMGObjectTypeVariant>::iterator it = objects.begin();
-    while (it != objects.end()){
-        if (objectVariantGetId(*it) == id){
-            break;
-        }
-        ++it;
-    }
-    return it;
-}
-
-std::optional<SMGObjectTypeVariant> convertSMGObjectVariant(SMGSimpleObjectTypeVariant obj){
-    if (std::holds_alternative<SMGRegionObject>(obj)){
-        return std::get<SMGRegionObject>(obj);
-    } else if (std::holds_alternative<SMGVarObject>(obj)){
-        return std::get<SMGVarObject>(obj);
-    } else if (std::holds_alternative<SMGEmptyObject>(obj)){
-        return std::get<SMGEmptyObject>(obj);
-    } else if (std::holds_alternative<SMGGenericObject>(obj)){
-        return std::get<SMGGenericObject>(obj);
-    } else {
-        llvm::errs() << "Unknown type in convertSMGObjectVariant" << "\n";
-        return {};
-    }
-}
-
 
 class SMG {
 
@@ -296,7 +72,7 @@ class SMG {
             std::string label = o["label"].template get<std::string>();
             if (label == "region"){
                 objects.push_back(o.template get<SMGRegionCompositeObject>());
-            } else if (label.rfind("DLS") == 0 || label.rfind("SLS") == 0 ){
+            } else if (label == "DLS" || label == "SLS"){
                 llvm::errs() << "found DLS/SLS object label: " << label << "\n";
             } else {
                 llvm::errs() << "unknown composite object label: " << label << "\n";
@@ -306,6 +82,25 @@ class SMG {
         return;
     }
 
+    int kill_duplicate_memory_values(){
+        // TODO do this properly by checking if the obj is referenced in multiple values?
+        // these should probably be merged instead? just their offsets somehow saved
+        int killed = 0;
+        auto it = values.begin();
+        while (it != values.end()){
+            auto val = *it;
+            if (val.is_mem && val.offset_low != 0) {
+                int val_id = val.id;
+                edges.erase(std::remove_if(edges.begin(), edges.end(), [&val_id](SMGEdge e){return e.from == val_id || e.to == val_id;}), edges.end());
+                values.erase(it);
+                killed++;
+            } else {
+                ++it;
+            }
+        }
+        return killed;
+    }
+
   public:
     std::vector<SMGValue> values;
     std::vector<SMGObjectTypeVariant> objects;
@@ -313,6 +108,9 @@ class SMG {
 
     SMG(json &smg_json){
         load(smg_json);
+        llvm::errs() << "Killing duplicate virtual values."  << "\n";
+        int killed = kill_duplicate_memory_values();
+        llvm::errs() << "Done killing (" << killed << ") duplicate virtual memory values.\n";
         llvm::errs() << "Loaded " << values.size() << " values, " << objects.size() << " objects and " << edges.size() << " edges."  << "\n";
     }
 
@@ -323,6 +121,8 @@ class SMG {
                 valueMap[val.var.llvmVal] = &val;
             } else if (val.is_mem){
                 valueMap[val.llvmVal] = &val;
+            } else if (!val.is_null){
+                llvm::errs() << "Unknown value found in getValueMap(), id: " << val.id << " \n";
             }
         }
         return valueMap;
@@ -333,6 +133,7 @@ class SMG {
         std::unordered_map<llvm::Value *, SMGValue *> valueMap = getValueMap();
         for (auto mapping : valueMap){
             SMGPTASet PTSet;
+            SMGPTAFlags PTFlags = {false};
             for (auto val : values){
                 if (hasEdge(mapping.second->id, val.id)){
                     llvm::Value* value = nullptr;
@@ -340,24 +141,55 @@ class SMG {
                         value = val.var.llvmVal; 
                     } else if (val.is_mem){
                         value = val.llvmVal; 
+                    } else if (val.is_null){
+                        PTFlags.null = true;
+                        continue;
+                    } else {
+                        llvm::errs() << "Unknown value found in getPointsToSets(), id: " << val.id << " \n";
                     }
                     Offset offset(getEdgeOffset(mapping.second->id, val.id));
-                    PTSet.push_back(LLVMPointer(value, offset));
+                    PTSet.insert(LLVMPointer(value, offset));
                 }
             }
             // Unsure how much this makes sense
             // PTSet.push_back(std::make_pair(mapping.first, 0));
-            pointsToSets[mapping.first] = PTSet;
+            pointsToSets[mapping.first] = std::make_pair(PTSet, PTFlags );
         }
         return pointsToSets;
     }
 
-    void mapLLVMValues(llvm::Module *m, std::string func_name){
+    void replaceGlobals(){
+        std::vector<SMGVarObject*> globals;
+        for (auto &obj : objects){
+            if (std::holds_alternative<SMGVarObject>(obj)){
+                SMGVarObject &var = std::get<SMGVarObject>(obj);
+                if (var.llvmVal && llvm::isa<llvm::GlobalVariable>(var.llvmVal)){
+                    globals.push_back(&var);
+                }
+            }
+        }
+        for (auto global : globals){
+            // TODO: maybe fill out some other SMGValue attributes?
+            SMGValue *val = new SMGValue();
+            int var_id = global->id;
+            val->id = var_id;
+            val->var = *global;
+            val->is_var = true;
+            val->llvmVal = global->llvmVal;
+            objects.erase(std::remove_if(objects.begin(), objects.end(), [&var_id](SMGObjectTypeVariant o){return objectVariantGetId(o) == var_id;}), objects.end());
+            values.push_back(*val);
+        }
+        return;
+    }
+
+    void mapLLVMValues(llvm::Module *m){
         std::vector<SMGVarObject*> vars;
         for (auto &obj : objects){
             if (std::holds_alternative<SMGVarObject>(obj)){
                 SMGVarObject &var = std::get<SMGVarObject>(obj);
-                vars.push_back(&var);
+                if (var.varName != ""){
+                    vars.push_back(&var);
+                }
             }
         }
         std::vector<SMGValue*> mems;
@@ -367,10 +199,12 @@ class SMG {
             }
         }
         for (auto &F : *m){
+            /*
             if (func_name != "" && F.getName() != func_name){
                 continue;
             }
-            for (llvm::inst_iterator I = llvm::inst_begin(F), E = llvm::inst_end(F); I != E; ++I){
+            */
+            for(llvm::inst_iterator I = llvm::inst_begin(F), E = llvm::inst_end(F); I != E; ++I){
                 //llvm::errs() << "inst: " << *I  << "\n";
                 //llvm::errs() << "operand 0: " << *I->getOperand(0) << "\n";
                 llvm::DebugLoc dbg = I->getDebugLoc();
@@ -394,7 +228,7 @@ class SMG {
                     if (dbg.getLine() == (unsigned) val->memLocLine && dbg.getCol() == (unsigned) val->memLocColumn){
                         llvm::Value *V = llvm::dyn_cast<llvm::Value>(&(*I));
                         val->llvmVal = V;
-                        llvm::errs() << "val: " << *val->llvmVal  << "\n";
+                        //llvm::errs() << "val: " << *val->llvmVal  << "\n";
                         auto it = std::find(mems.begin(), mems.end(), val);
                         mems.erase(it);
                         break;
@@ -402,11 +236,29 @@ class SMG {
                 }
             }
         }
+        // Map global variables
+        std::vector<SMGVarObject*>::iterator it = vars.begin();
+        while (it != vars.end()){
+            auto var = *it;
+            if (auto globVar = m->getGlobalVariable(var->varName)){
+                llvm::Value *V = llvm::cast <llvm::Value>(globVar);
+                var->llvmVal = V;
+                vars.erase(it);
+            } else {
+                ++it;
+            }
+        }
         if (vars.size()){
             llvm::errs() << "Not every SMG variable mapped!" << "\n";
+            for (auto var : vars){
+                llvm::errs() << "Var: " << var->id << "\n";
+            }
         }
         if (mems.size()){
             llvm::errs() << "Not every SMG heap object mapped!" << "\n";
+            for (auto mem : mems){
+                llvm::errs() << "Mem: " << mem->id << "\n";
+            }
         }
     }
 
@@ -454,6 +306,27 @@ class SMG {
         return 0;
     }
 
+    void removeAnonymousObjects(){
+        llvm::errs() << "Removing anonymous objects, total objects: " << objects.size() << "\n";
+        auto it = objects.begin();
+        while (it != objects.end()){
+            auto obj = *it;
+            if (std::holds_alternative<SMGVarObject>(obj)){
+                SMGVarObject var = std::get<SMGVarObject>(obj);
+                if (var.varName == ""){
+                    int var_id = var.id;
+
+                    edges.erase(std::remove_if(edges.begin(), edges.end(), [&var_id](SMGEdge e){return e.from == var_id || e.to == var_id;}), edges.end());
+
+                    objects.erase(it);
+                    continue;
+                }
+            }
+            ++it;
+        }
+        llvm::errs() << "Done removing anonymous objects, total objects: " << objects.size() << "\n";
+    }
+
     void simplifyCompositeObjects(){
         llvm::errs() << "Simplifying composite objects, total objects: " << objects.size() << "\n";
         std::vector<SMGObjectTypeVariant> newObjects;
@@ -478,6 +351,15 @@ class SMG {
         llvm::errs() << "Done simplifying composite objects, new total objects: " << objects.size() << "\n";
     }
 
+    int findOriginalId(SMGValue* dupe){
+        for (auto val : values){
+            if (val.id != dupe->id && val.obj == dupe->obj && val.offset_low == 0){
+                return val.id;
+            }
+        }
+        return 0;
+    }
+
     void simplifyValues(){
         std::vector<SMGVarObject> varObjects;
         for (auto &obj : objects){
@@ -493,7 +375,7 @@ class SMG {
             // TODO: keep ints?
             if (val.label == "int" || val.label == "int_range" || val.label == "real" || val.label == "str"){
                 values.erase(val_it);
-                edges.erase(std::find_if(edges.begin(), edges.end(), [&val_id](SMGEdge e){return e.to == val_id;}));
+                edges.erase(std::remove_if(edges.begin(), edges.end(), [&val_id](SMGEdge e){return e.to == val_id;}), edges.end());
             } else {
                 ++val_it;
             }
@@ -502,6 +384,9 @@ class SMG {
         llvm::errs() << "Merging values (" << values.size() << ") with variable and region objects (total objects: " << objects.size() << ")\n";
         // merge values with variables
         for (auto var : varObjects){
+            if (not var.llvmVal){
+                continue;
+            }
             for (auto &val : values){
                 if(hasEdge(var.id, val.id)){
                     int obj_id = val.obj;
@@ -525,24 +410,27 @@ class SMG {
                     val.is_var = true;
                     val.var = var;
 
-                    // TODO: I'm not sure why I put this here twice but it doesn't work without either
-                    edges.erase(std::find_if(edges.begin(), edges.end(), [&val_id](SMGEdge e){return e.to == val_id && e.from == val_id;}));
+                    edges.erase(std::remove_if(edges.begin(), edges.end(), [&val_id](SMGEdge e){return e.to == val_id && e.from == val_id;}), edges.end());
                     objects.erase(it);
-                    edges.erase(std::find_if(edges.begin(), edges.end(), [&val_id](SMGEdge e){return e.to == val_id && e.from == val_id;}));
 
-                    objects.erase(std::find_if(objects.begin(), objects.end(), [&var_id](SMGObjectTypeVariant o){return objectVariantGetId(o) == var_id;}));
+                    objects.erase(std::remove_if(objects.begin(), objects.end(), [&var_id](SMGObjectTypeVariant o){return objectVariantGetId(o) == var_id;}), objects.end());
                     break;
                 }
             }
         }
         llvm::errs() << "Merging values (" << values.size() << ") with region objects (total objects: " << objects.size() << ")\n";
+        std::vector<SMGValue*> duplicateValues;
         // merge values with memory locations
         for (auto &val : values){
+            if (val.is_var || val.is_null){
+                continue;
+            }
             if (val.lonely){
                 llvm::errs() << "Found lonely value: " << val.id << ", label: " << val.label << "\n";
                 continue;
             }
-            if (val.is_var){
+            if (val.offset_low){
+                duplicateValues.push_back(&val);
                 continue;
             }
             int obj_id = val.obj;
@@ -560,10 +448,26 @@ class SMG {
             val.size_high = obj.size_high;
 
             objects.erase(it);
-            edges.erase(std::find_if(edges.begin(), edges.end(), [&obj_id,&val_id](SMGEdge e){return e.to == obj_id && e.from == val_id;}));
+            edges.erase(std::remove_if(edges.begin(), edges.end(), [&obj_id,&val_id](SMGEdge e){return e.to == obj_id && e.from == val_id;}), edges.end());
             replaceEdgeTargets(obj_id, val_id);
         }
-        llvm::errs() << "Done merging values (" << values.size() << ")  objects (" << objects.size() << ")\n";
+        if (duplicateValues.size()){
+            llvm::errs() << "Merging duplicate values (" << values.size() << ") objects (" << objects.size() << ")\n";
+            for (auto val : duplicateValues){
+                int val_id = val->id;
+                int original_id = findOriginalId(val);
+
+                for (auto &edge : edges){
+                    if (edge.to == val_id){
+                        edge.to = original_id;
+                        edge.off += val->offset_low;
+                    }
+                }
+
+                edges.erase(std::remove_if(edges.begin(), edges.end(), [&val_id](SMGEdge e){return e.from == val_id;}), edges.end());
+            }
+        }
+        llvm::errs() << "Done merging values (" << values.size() << ") objects (" << objects.size() << ")\n";
     }
 
     void simplifyEmptyObjects(){
@@ -600,15 +504,53 @@ class SMG {
             }
 
             edges.erase(std::find(edges.begin(), edges.end(), to_edge));
-            objects.erase(std::find_if(objects.begin(), objects.end(), [&empty](SMGObjectTypeVariant o){return objectVariantGetId(o) == empty.id;}));
+            objects.erase(std::remove_if(objects.begin(), objects.end(), [&empty](SMGObjectTypeVariant o){return objectVariantGetId(o) == empty.id;}), objects.end());
         }
         llvm::errs() << "Done removing empty objects at " << objects.size() << ".\n";
     }
 
+    void removeUnmergedValues(){
+        llvm::errs() << "Removing unmerged values, total values: " << values.size() << "\n";
+        auto it = values.begin();
+        while (it != values.end()){
+            auto val = *it;
+            int val_id = val.id;
+            if (val.is_mem || val.is_var || val.is_null){
+                ++it;
+            } else {
+                llvm::errs() << "Removing unmerged value: " << val_id << "\n";
+                edges.erase(std::remove_if(edges.begin(), edges.end(), [&val_id](SMGEdge e){return e.to == val_id || e.from == val_id;}), edges.end());
+                values.erase(it);
+            }
+        }
+        llvm::errs() << "Done removing unmerged values, total values: " << values.size() << "\n";
+    }
+
+    void removeStrandedValues(){
+        llvm::errs() << "Removing stranded values, total values: " << values.size() << "\n";
+        auto it = values.begin();
+        while (it != values.end()){
+            auto val = *it;
+            auto connected_edges = getEdgesWithId(val.id);
+            auto to_edges = connected_edges.first;
+            auto from_edges = connected_edges.second;
+            if ((to_edges.size() + from_edges.size()) == 0){
+                values.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        llvm::errs() << "Done removing stranded values, total values: " << values.size() << "\n";
+    }
+
     void simplify(){
+        replaceGlobals();
         simplifyCompositeObjects();
         simplifyValues();
         simplifyEmptyObjects();
+        removeUnmergedValues();
+        removeAnonymousObjects();
+        removeStrandedValues();
         llvm::errs() << "Simplified to " << values.size() << " values, "
                      << objects.size() << " objects, "
                      << edges.size() << " edges.\n";
@@ -616,61 +558,37 @@ class SMG {
 };
 
 class SMGLLVMPointsToSet : public LLVMPointsToSetImplTemplate<SMGPTASet> {
+    SMGPTAFlags flags{false, false, false, false};
+    int flag_count;
     /*
-    size_t _position{0};
-
-    llvm::Value *_getValue(unsigned id) const {
-        auto *pagnode = _pag->getPAGNode(id);
-        if (pagnode->hasValue())
-            return const_cast<llvm::Value *>(pagnode->getValue());
-
-        // for debugging right now
-        llvm::errs() << "[SVF] No value in PAG NODE\n";
-        llvm::errs() << *pagnode << "\n";
-        return nullptr;
-    }
-
     void _findNextReal() override {
         while (it != PTSet.end()) {
-            if (_pag->getPAGNode(*it)->hasValue())
+            if (*it.first.empty()){
                 break;
-
-            // else
-            //     llvm::errs() << "no val" << *_pag->getPAGNode(*it) << "\n";
-
-            ++it;
-            ++_position;
+            } else {
+                ++it;
+            }
         }
     }
     */
-    void _findNextReal() override {
-        while (it != PTSet.end()) {
-            if (true){ // TODO check for unknowns and such
-                break;
-            }
-            ++it;
-        }
+    void _findNextReal() override {} // TODO maybe not needed?
+
+    void set_flags(SMGPTAFlags F){
+        flags.null = F.null;
+        flags.nullWithOffset = F.nullWithOffset;
+        flags.unknown = F.unknown;
+        flags.invalidated = F.invalidated;
+        flag_count = F.null + F.nullWithOffset + F.unknown + F.invalidated;
     }
 
   public:
-    SMGLLVMPointsToSet(SMGPTASet &S)
+    SMGLLVMPointsToSet(SMGPTASet &S, SMGPTAFlags F)
             : LLVMPointsToSetImplTemplate(std::move(S)) {
         initialize_iterator();
+        set_flags(F);
     }
 
     /*
-    bool hasUnknown() const override {
-        return PTSet.test(_pag->getBlackHoleNode());
-    }
-
-    bool hasNull() const override { return PTSet.test(_pag->getNullPtr()); }
-
-    bool hasNullWithOffset() const override {
-        // we are field-insensitive now...
-        return hasNull();
-    }
-
-    bool hasInvalidated() const override { return false; }
     size_t size() const override { return PTSet.count(); }
 
     LLVMPointer getKnownSingleton() const override {
@@ -681,17 +599,23 @@ class SMGLLVMPointsToSet : public LLVMPointsToSetImplTemplate<SMGPTASet> {
 
     // TODO these methods need proper implementation
     bool hasUnknown() const override {
-        return false;
+        return flags.unknown;
     }
 
-    bool hasNull() const override { return false; }
+    bool hasNull() const override { 
+        return flags.null;
+    }
 
     bool hasNullWithOffset() const override {
-        return hasNull();
+        return flags.nullWithOffset;
     }
 
-    bool hasInvalidated() const override { return false; }
-    size_t size() const override { return PTSet.size(); }
+    bool hasInvalidated() const override {
+        return flags.invalidated;
+    }
+    size_t size() const override {
+        return PTSet.size() + flag_count; //Not sure if this is supposed to include the flags but eh
+    }
 
     LLVMPointer getKnownSingleton() const override {
         assert(isKnownSingleton());
@@ -707,7 +631,7 @@ class SMGLLVMPointsToSet : public LLVMPointsToSetImplTemplate<SMGPTASet> {
 // Integration of pointer analysis from predator SMG
 class SMGPointerAnalysis : public LLVMPointerAnalysis {
     llvm::Module *_module{nullptr};
-    const char *_smg_json_filename{nullptr};
+    const char *_smg_json_dir_path{nullptr};
     SMGPTA _pts;
     SMGPTA _smg_pts;
 
@@ -720,22 +644,17 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
     }
 
     */
-    LLVMPointsToSet mapSMGPointsTo(SMGPTASet S) {
-        auto *pts = new SMGLLVMPointsToSet(S);
+    LLVMPointsToSet mapSMGPointsTo(SMGPTAPair S) {
+        auto *pts = new SMGLLVMPointsToSet(S.first, S.second);
         return pts->toLLVMPointsToSet();
     }
 
   public:
     SMGPointerAnalysis(llvm::Module *M,
                        const LLVMPointerAnalysisOptions &opts)
-            : LLVMPointerAnalysis(opts), _module(M), _smg_json_filename(opts.smg_json_filename.c_str()) {}
+            : LLVMPointerAnalysis(opts), _module(M), _smg_json_dir_path(opts.smg_json_dir_path.c_str()) {}
 
-    ~SMGPointerAnalysis() override {
-        // _svfModule overtook the ownership of llvm::Module,
-        // we must re-take it to avoid double free
-        // TODO figure out if this is still needed?
-        //LLVMModuleSet::releaseLLVMModuleSet();
-    }
+    ~SMGPointerAnalysis() override {}
 
     bool hasPointsTo(const llvm::Value *val) override {
         /*
@@ -755,14 +674,8 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
     // and hasNull() that reflect whether the points-to set of the
     // LLVM value contains unknown element of null.
     LLVMPointsToSet getLLVMPointsTo(const llvm::Value *val) override {
-        /*
-        SMG *smg = _pta->getSMG();
-        auto pts = _pta->getPts(smg->getValueNode(val));
-        return mapSMGPointsTo();
-        */
-        //return _dg_pta->getLLVMPointsTo(val);
         if (!hasPointsTo(val)){
-            return mapSMGPointsTo(SMGPTASet());
+            return mapSMGPointsTo({SMGPTASet(), {false, false, /*unknown=*/ true, false}});
         }
         return mapSMGPointsTo(_pts[val]);
     }
@@ -849,16 +762,45 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
 
     void dumpSMGPointsTo(SMG smg){
         SMGPTA pointsToSets = smg.getPointsToSets();
-        for (auto PTSet : pointsToSets){
-            llvm::errs() << "SMG points to info:" << *PTSet.first << "\n";
-            for (auto ptPair : PTSet.second){
+        dumpSMGPTAPointsTo(pointsToSets);
+    }
+
+    void dumpSMGPTAPointsTo(SMGPTA pointsToSets){
+        for (auto PTPair : pointsToSets){
+            llvm::errs() << "SMG points to info:" << *PTPair.first << "\n";
+            SMGPTASet& values = PTPair.second.first;
+            SMGPTAFlags& flags = PTPair.second.second;
+            for (auto ptPair : values){
                 llvm::errs() << "                 ->" << *ptPair.value << " + " << *ptPair.offset << "\n";
+            }
+            if (flags.null){
+                llvm::errs() << "                 ->  null" << "\n";
+            }
+            if (flags.nullWithOffset){
+                llvm::errs() << "                 ->  null + ?" << "\n";
+            }
+            if (flags.unknown){
+                llvm::errs() << "                 ->  unknown" << "\n";
+            }
+            if (flags.invalidated){
+                llvm::errs() << "                 ->  invalidated" << "\n";
             }
         }
     }
 
+    int mergePTAPairs(SMGPTAPair &target, const SMGPTAPair source){
+        int found = 0;
+        for(auto pt : source.first){
+            target.first.insert(pt);
+            found++;
+        }
+        merge_flags(&target.second, source.second);
+        return found;
+    }
+
     SMGPTA calculateAssistedPTA(){
         SMGPTA pts;
+        SMGPTA returns;
         for (auto &F : *_module){
             for (llvm::inst_iterator I = llvm::inst_begin(F), E = llvm::inst_end(F); I != E; ++I){
                 llvm::errs() << "inst: " << *I  << "\n";
@@ -867,63 +809,132 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
                     llvm::Value *op = I->getOperand(0);
                     // TODO: Figure out how to use all indexes, not just the first of every set
                     if (_smg_pts.count(op)){
-                        pts[V].push_back(_smg_pts[op][0]);
-                    } else if (_smg_pts.count(pts[op][0].value)) {
-                        pts[V].push_back(_smg_pts[pts[op][0].value][0]);
+                        mergePTAPairs(pts[V], _smg_pts[op]);
                     } else {
-                        llvm::errs() << "Fix load instruction pta " << *I  << "\n";
+                        int found = 0;
+                        for(auto target : pts[op].first){
+                            found += mergePTAPairs(pts[V], _smg_pts[target.value]);
+                        }
+                        if(!found){
+                            llvm::errs() << "Fix load instruction pta " << *I  << "\n";
+                        }
                     }
                 } else if (llvm::isa <llvm::AllocaInst> (*I)){
-                    pts[V].push_back(LLVMPointer(V, Offset(0)));
+                    pts[V].first.insert(LLVMPointer(V, Offset(0)));
                 } else if (llvm::isa <llvm::CastInst> (*I)){
-                    pts[V].push_back(LLVMPointer(I->getOperand(0), Offset(0)));
-                } else if (llvm::isa <llvm::CallInst> (*I)){
+                    pts[V].first.insert(LLVMPointer(I->getOperand(0), Offset(0)));
+                } else if (llvm::CallInst *CI = llvm::dyn_cast<llvm::CallInst>(&*I)){
+                    llvm::Value *F = llvm::dyn_cast<llvm::Value>(CI->getCalledFunction());
                     if (_smg_pts.count(V)){
-                        pts[V].push_back(LLVMPointer(V, Offset(0)));
+                        pts[V].first.insert(LLVMPointer(V, Offset(0)));
+                    } else if (returns.count(F)){
+                        mergePTAPairs(pts[V], returns[F]);
                     } else {
                         continue;
                     }
+                } else if (llvm::isa <llvm::ReturnInst> (*I)){
+                    llvm::Value *op = I->getOperand(0);
+                    if (pts.count(op)){
+                        llvm::Value *F = llvm::dyn_cast<llvm::Value>(I->getFunction());
+                        mergePTAPairs(returns[F], pts[op]);
+                    }
+                    continue;
+                } else if (llvm::isa <llvm::GetElementPtrInst> (*I)){
+                    // TODO
                 } else if (llvm::isa <llvm::StoreInst> (*I)){
                     continue;
-                } else if (llvm::isa <llvm::ReturnInst> (*I)){
+                } else if (llvm::isa <llvm::BranchInst> (*I)){
+                    continue;
+                } else if (llvm::isa <llvm::ICmpInst> (*I)){
                     continue;
                 } else {
                     llvm::errs() << "Unknown type of instruction? " << *I  << "\n";
                     continue;
                 }
-                llvm::errs() << "-> " << *pts[V][0].value << "\n";
+                for(auto pt : pts[V].first){
+                    llvm::errs() << "-> " << *pt.value << "\n";
+                }
+                SMGPTAFlags& flags = pts[V].second;
+                if (flags.null){
+                    llvm::errs() << "                 ->  null" << "\n";
+                }
+                if (flags.nullWithOffset){
+                    llvm::errs() << "                 ->  null + ?" << "\n";
+                }
+                if (flags.unknown){
+                    llvm::errs() << "                 ->  unknown" << "\n";
+                }
+                if (flags.invalidated){
+                    llvm::errs() << "                 ->  invalidated" << "\n";
+                }
             }
         }
         return pts;
     }
 
+    void smg_pts_merge(SMGPTA &target, SMGPTA source){
+        // SMGPTA = std::unordered_map<const llvm::Value *, std::pair<SMGPTASet, SMGPTAFlags>>;
+        for (auto sourcePTSPair : source){
+            if(target.count(sourcePTSPair.first)){
+                SMGPTASet& values = sourcePTSPair.second.first;
+                SMGPTAFlags& flags = sourcePTSPair.second.second;
+                for (auto ptPair : values){
+                    target[sourcePTSPair.first].first.insert(ptPair);
+                }
+                merge_flags(&target[sourcePTSPair.first].second, flags);
+            } else {
+                target[sourcePTSPair.first] = sourcePTSPair.second;
+            }
+        }
+    }
+
+
     bool run() override {
         DBG_SECTION_BEGIN(pta, "Running SMG pointer analysis");
         llvm::errs() << "Running SMG pointer analysis" << "\n";
+        std::string smg_prefix = "./smg-";
+        std::string smg_suffix = ".json";
+        _smg_pts = SMGPTA();
 
-        llvm::errs() << "Parsing json file: " << _smg_json_filename << "\n";
-        std::ifstream f(_smg_json_filename);
-        json smg_json = json::parse(f);
-        llvm::errs() << "Done parsing the json file" << "\n";
+        for (const auto &entry : fs::directory_iterator(_smg_json_dir_path)){
+            std::string filename = entry.path();
 
-        llvm::errs() << "Parsing the json object into SMG" << "\n";
-        SMG smg = SMG(smg_json);
-        llvm::errs() << "Done parsing the SMG" << "\n";
+            if (!starts_with(filename, smg_prefix) || !ends_with(filename, smg_suffix)){
+                continue;
+            }
 
-        llvm::errs() << "Mapping variables in SMG to LLVM Values" << "\n";
-        smg.mapLLVMValues(_module, smg_json["metadata"]["func_name"]);
-        llvm::errs() << "Done Mapping variables" << "\n";
+            llvm::errs() << "Parsing json file: " << filename << "\n";
+            std::ifstream f(filename);
+            json smg_json = json::parse(f);
+            llvm::errs() << "Done parsing the json file.\n";
 
-        llvm::errs() << "Simplifying the SMG into a points-to graph" << "\n";
-        smg.simplify();
-        llvm::errs() << "Done simplifying" << "\n";
+            if (smg_json["metadata"]["func_name"] == "__initGlobalVar"){
+                continue;
+            }
 
-        dumpSMG(smg);
-        dumpSMGPointsTo(smg);
+            llvm::errs() << "Parsing the json object into SMG.\n";
+            SMG smg = SMG(smg_json);
+            llvm::errs() << "Done parsing the SMG.\n";
 
-        llvm::errs() << "Using SMG points-to information to calculate the DG expected sets." << "\n";
-        _smg_pts = smg.getPointsToSets();
+            llvm::errs() << "Mapping variables in SMG to LLVM Values.\n";
+            smg.mapLLVMValues(_module);
+            llvm::errs() << "Done Mapping variables.\n";
 
+            llvm::errs() << "Simplifying the SMG into a points-to graph.\n";
+            smg.simplify();
+            llvm::errs() << "Done simplifying.\n";
+
+            dumpSMG(smg);
+            dumpSMGPointsTo(smg);
+
+            llvm::errs() << "Merging information with other loaded SMGs.\n";
+            smg_pts_merge(_smg_pts, smg.getPointsToSets());
+            llvm::errs() << "Done merging information with other loaded SMGs.\n";
+
+            dumpSMGPTAPointsTo(_smg_pts);
+        }
+
+        llvm::errs() << "Using SMG points-to information to calculate the DG expected sets.\n";
         _pts = calculateAssistedPTA();
 
         //_pta = new SMGPointsTo(smg, _module);

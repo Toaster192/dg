@@ -12,7 +12,7 @@ struct LLVMPointerAnalysisOptions : public LLVMAnalysisOptions,
 
     bool threads{false};
 
-    std::string smg_json_filename{std::string()};
+    std::string smg_json_dir_path{std::string()};
 
     bool isFS() const { return analysisType == AnalysisType::fs; }
     bool isFSInv() const { return analysisType == AnalysisType::inv; }

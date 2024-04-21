@@ -224,10 +224,10 @@ SlicerOptions parseSlicerOptions(int argc, char *argv[], bool requireCrit,
                     "E.g., myAlloc:malloc will treat myAlloc as malloc.\n"),
             llvm::cl::cat(SlicingOpts));
 
-    llvm::cl::opt<std::string> smg_json_filename(
-            "smg-filename",
+    llvm::cl::opt<std::string> smg_json_dir_path(
+            "smg-dir",
             llvm::cl::desc(
-                    "Filename of the SMG json file for SMG PTA.\n"),
+                    "Path to the directory of SMG json files for SMG PTA.\n"),
             llvm::cl::cat(SlicingOpts));
 
 
@@ -427,7 +427,7 @@ SlicerOptions parseSlicerOptions(int argc, char *argv[], bool requireCrit,
 
     PTAOptions.entryFunction = entryFunction;
     PTAOptions.fieldSensitivity = dg::Offset(ptaFieldSensitivity);
-    PTAOptions.smg_json_filename = smg_json_filename;
+    PTAOptions.smg_json_dir_path = smg_json_dir_path;
     PTAOptions.analysisType = ptaType;
     PTAOptions.threads = threads;
 

@@ -29,6 +29,13 @@ struct LLVMPointer {
         return value == rhs.value && offset == rhs.offset;
     }
 
+    bool operator<(const LLVMPointer &rhs) const {
+        if (value == rhs.value){
+            return offset < rhs.offset;
+        }
+        return value < rhs.value;
+    }
+
     ///
     // Memory locations described by this pointer cover
     // (are a supperset) the memory locations of the rhs pointer.
