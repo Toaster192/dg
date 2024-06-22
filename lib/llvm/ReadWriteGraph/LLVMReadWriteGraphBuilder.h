@@ -69,7 +69,7 @@ class LLVMReadWriteGraphBuilder
 
     ReadWriteGraph &&build() {
         // FIXME: this is a bit of a hack
-        if (!PTA->getOptions().isSVF()) {
+        if (!PTA->getOptions().isSVF() && !PTA->getOptions().isSMG()) {
             auto *dgpta = static_cast<DGLLVMPointerAnalysis *>(PTA);
             llvmdg::CallGraph CG(dgpta->getPTA()->getPG()->getCallGraph());
             buildFromLLVM(&CG);

@@ -202,6 +202,8 @@ inline void from_json(const json& j, SMGValue& v) {
     }
     if (v.label == "NULL"){
         v.is_null = true;
+    } else if (v.label == "VO_UNKNOWN"){
+        v.is_unknown = true;
     }
 }
 
@@ -282,8 +284,14 @@ class SMGLinkedListCompositeObject : public SMGGenericObject{
     }
 
     SMGValue* getFirstValue(std::vector<SMGValue> &values){
+        // Try to find the value without any offsets first
         for(auto &value : values){
-            if (value.obj == obj_id && value.target_spec_label == "TS_:IRST"){
+            if (value.obj == obj_id && value.target_spec_label == "TS_FIRST" && value.offset_low == 0){
+                return &value;
+            }
+        }
+        for(auto &value : values){
+            if (value.obj == obj_id && value.target_spec_label == "TS_FIRST"){
                 return &value;
             }
         }
@@ -291,6 +299,12 @@ class SMGLinkedListCompositeObject : public SMGGenericObject{
     }
 
     SMGValue* getLastValue(std::vector<SMGValue> &values){
+        // Try to find the value without any offsets first
+        for(auto &value : values){
+            if (value.obj == obj_id && value.target_spec_label == "TS_LAST" && value.offset_low == 0){
+                return &value;
+            }
+        }
         for(auto &value : values){
             if (value.obj == obj_id && value.target_spec_label == "TS_LAST"){
                 return &value;
