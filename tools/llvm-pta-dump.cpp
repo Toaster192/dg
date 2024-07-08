@@ -963,27 +963,6 @@ int main(int argc, char *argv[]) {
                             errors++;
                             continue;
                         }
-                        /*
-                        if (pts.hasNull() && dgpts.hasNull()) {
-                            same++;
-                        }
-                        if (pts.hasNull() && !dgpts.hasNull()) {
-                            errors++;
-                        }
-                        if (!pts.hasNull() && dgpts.hasNull()) {
-                            more_accurate++;
-                            std::cout << "null gone\n";
-                        }
-                        if (pts.hasNullWithOffset() && dgpts.hasNullWithOffset()) {
-                            same++;
-                        }
-                        if (pts.hasNullWithOffset() && !dgpts.hasNullWithOffset()) {
-                            errors++;
-                        }
-                        if (!pts.hasNullWithOffset() && dgpts.hasNullWithOffset()) {
-                            more_accurate++;
-                        }
-                        */
                         if (pts.hasUnknown() && !dgpts.hasUnknown()) {
                             errors++;
                             continue;
@@ -996,13 +975,17 @@ int main(int argc, char *argv[]) {
                             errors++;
                             continue;
                         }
-                        if (pts.size() < dgpts.size()){
+                        unsigned long dgsize = dgpts.size();
+                        if (dgpts.hasNullWithOffset() && dgpts.hasNull() && dgsize < 2){ // dg sometimes ignores null or nullwithoffset in its size calculations for whatever reason
+                            dgsize = 2;
+                        }
+                        if (pts.size() < dgsize){
                             more_accurate++;
                         }
-                        if (pts.size() > dgpts.size()){
+                        if (pts.size() > dgsize){
                             errors++;
                         }
-                        if (pts.size() == dgpts.size()){
+                        if (pts.size() == dgsize){
                             same++;
                         }
                         continue;
