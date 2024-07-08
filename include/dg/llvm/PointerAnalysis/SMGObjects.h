@@ -142,6 +142,7 @@ class SMGValue{
     int offset_low{0};
     int offset_high{0};
     bool lonely{false};
+    std::string value;
     // Don't care about lonely, value, iid?
 
     std::string memory_location;
@@ -149,6 +150,7 @@ class SMGValue{
     int size_high;
     int size_low;
     bool is_null{false};
+    bool is_null_with_offset{false};
     bool is_unknown{false};
     bool is_var{false};
     SMGVarObject var;
@@ -187,7 +189,12 @@ inline void from_json(const json& j, SMGValue& v) {
         j.at("targetSpecLabel").get_to(v.target_spec_label);
     }
 
+    if (j.find("value") != j.end() && j.at("value").is_string()){
+        j.at("value").get_to(v.value);
+    }
+
     v.is_null = false;
+    v.is_null_with_offset = false;
     v.is_var = false;
     v.is_mem = false;
     v.llvm_val = nullptr;
@@ -202,7 +209,7 @@ inline void from_json(const json& j, SMGValue& v) {
     }
     if (v.label == "NULL"){
         v.is_null = true;
-    } else if (v.label == "VO_UNKNOWN"){
+    } else if (v.label == "VO_UNKNOWN" || v.label == "VO_ASSIGNED"){
         v.is_unknown = true;
     }
 }
@@ -252,10 +259,12 @@ inline void from_json(const json& j, SMGRegionCompositeObject& c) {
     j.at("id").get_to(c.id);
     j.at("label").get_to(c.label);
     for (auto o : j["objects"]){
-        if (o["label"] == "empty"){
+        if (o["label"] == "empty" || o["label"] == "UNIFORM_BLOCK"){
             c.objects.push_back(o.template get<SMGEmptyObject>());
         } else if (o["label"] == "SC_ON_STACK" || o["label"] == "SC_ON_HEAP"){
             c.objects.push_back(o.template get<SMGRegionObject>());
+        } else if (o["label"] == "SC_STATIC"){
+            c.objects.push_back(o.template get<SMGVarObject>());
         } else {
             llvm::errs() << "unknown object label: " << o["label"].template get<std::string>() << "\n";
         }
@@ -316,20 +325,20 @@ class SMGLinkedListCompositeObject : public SMGGenericObject{
     int getNextObjectId(std::vector<SMGEdge> edges){
         int target_id = obj_id;
         int target_offset = next_offset;
-        SMGEdge nextPointer = *std::find_if(edges.begin(), edges.end(), [&target_id, &target_offset](SMGEdge e){return e.from == target_id && e.off == target_offset;});
+        SMGEdge &nextPointer = *std::find_if(edges.begin(), edges.end(), [&target_id, &target_offset](SMGEdge e){return e.from == target_id && e.off == target_offset;});
         return nextPointer.to;
     }
 
     int getPrevObjectId(std::vector<SMGEdge> edges){
         int target_id = obj_id;
         int target_offset = prev_offset;
-        SMGEdge prevPointer = *std::find_if(edges.begin(), edges.end(), [&target_id, &target_offset](SMGEdge e){return e.from == target_id && e.off == target_offset;});
+        SMGEdge &prevPointer = *std::find_if(edges.begin(), edges.end(), [&target_id, &target_offset](SMGEdge e){return e.from == target_id && e.off == target_offset;});
         return prevPointer.to;
     }
 
     int getObjectIdByOffset(std::vector<SMGEdge> edges, int target_offset){
         int target_id = obj_id;
-        SMGEdge objPointer = *std::find_if(edges.begin(), edges.end(), [&target_id, &target_offset](SMGEdge e){return e.from == target_id && e.off == target_offset;});
+        SMGEdge &objPointer = *std::find_if(edges.begin(), edges.end(), [&target_id, &target_offset](SMGEdge e){return e.from == target_id && e.off == target_offset;});
         return objPointer.to;
     }
 };
@@ -444,13 +453,31 @@ inline std::optional<SMGObjectTypeVariant> convertSMGObjectVariant(SMGSimpleObje
     }
 }
 
-inline int findUniqueId(std::vector<SMGObjectTypeVariant> &objects, std::vector<SMGValue> &values){
+inline std::pair<std::vector<SMGEdge*>, std::vector<SMGEdge*>> getEdgesWithId(int id, std::vector<SMGEdge> &edges){
+    std::vector<SMGEdge*> toId;
+    std::vector<SMGEdge*> fromId;
+    for (auto &edge : edges){
+        if (edge.to == id){
+            toId.push_back(&edge);
+        }
+        if (edge.from == id){
+            fromId.push_back(&edge);
+        }
+    }
+    return std::make_pair(toId, fromId);
+}
+
+inline int findUniqueId(std::vector<SMGValue> &values, std::vector<SMGObjectTypeVariant> &objects, std::vector<SMGEdge> &edges){
     static int i = 0;
     for(i++; true; i++){
         if(getObjectById(i, objects) != objects.end()){
             continue;
         }
         if(getValueById(i, values) != values.end()){
+            continue;
+        }
+        auto found_edges = getEdgesWithId(i, edges);
+        if(!found_edges.first.empty() || !found_edges.second.empty()){
             continue;
         }
         return i;
