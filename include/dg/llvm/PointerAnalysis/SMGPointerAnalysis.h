@@ -124,7 +124,7 @@ class SMG {
             if (o["label"] == "field"){
                 objects.push_back(o.template get<SMGVarObject>());
             } else {
-                llvm::errs() << "unknown object label: " << o["label"].template get<std::string>()  << "\n";
+                llvm::errs() << "Unknown object label: " << o["label"].template get<std::string>()  << "\n";
             }
         }
         //llvm::errs() << "Parsing SMG edges" << "\n";
@@ -139,7 +139,7 @@ class SMG {
             } else if (label == "DLS" || label == "SLS"){
                 objects.push_back(o.template get<SMGLinkedListCompositeObject>());
             } else {
-                llvm::errs() << "unknown composite object label: " << label << "\n";
+                llvm::errs() << "Unknown composite object label: " << label << "\n";
             }
         }
 
@@ -660,7 +660,7 @@ class SMG {
                 objects.erase(it);
             } else if (std::holds_alternative<SMGLinkedListCompositeObject>(obj)){
                 SMGLinkedListCompositeObject linked_list = std::get<SMGLinkedListCompositeObject>(obj);
-                SMGValue* first_value = linked_list.getFirstValue(values);
+                //SMGValue* first_value = linked_list.getFirstValue(values);
                 SMGValue* last_value = linked_list.getLastValue(values);
 
                 int next_obj_id = linked_list.getNextObjectId(edges);
@@ -676,6 +676,7 @@ class SMG {
                     prev_value = getObjectsPtrValue(prev_obj->id);
                 }
 
+                /*
                 if (linked_list.seg_min_len == 0){
                     auto obj_it = getObjectById(linked_list.obj_id, linked_list.objects);
                     SMGRegionObject region = std::get<SMGRegionObject>(*obj_it);
@@ -714,6 +715,7 @@ class SMG {
                     }
                     // Remove all edges inside the linked list before the objects are abandoned
                     removeEdgesOfObjects(linked_list.objects);
+                */
                 /*
                 } else if (linked_list.seg_min_len == 1){
                     auto obj_it = getObjectById(linked_list.obj_id, linked_list.objects);
@@ -731,51 +733,54 @@ class SMG {
                     edges.push_back(SMGEdge(next_obj->id, last_value->id, 0));
 
                     expandCompositeObject(linked_list, newObjects);
-                */
                 } else if (linked_list.seg_min_len == 1 || linked_list.seg_min_len == 2){
-                    // copy the linked list segment
-                    SMGLinkedListCompositeObject copy = SMGLinkedListCompositeObject(linked_list, findUniqueId(values, objects, edges));
-                    copyCompositeObjectObjects(copy, linked_list);
+                */
+                // copy the linked list segment
+                SMGLinkedListCompositeObject copy = SMGLinkedListCompositeObject(linked_list, findUniqueId(values, objects, edges));
+                copyCompositeObjectObjects(copy, linked_list);
 
-                    // set the last value .obj attribute to the new segment region
-                    if(last_value){
-                        last_value->obj = copy.obj_id;
-                    }
+                // set the last value .obj attribute to the new segment region
+                if(last_value){
+                    last_value->obj = copy.obj_id;
+                }
 
-                    // create an unknown value to point to between the two border segments etc.
-                    SMGValue unknown(findUniqueId(values, objects, edges), "unknown");
-                    unknown.is_unknown = true;
-                    values.push_back(unknown);
+                /*
+                // create an unknown value to point to between the two border segments etc.
+                SMGValue unknown(findUniqueId(values, objects, edges), "unknown");
+                unknown.is_unknown = true;
+                values.push_back(unknown);
 
-                    chainListSegments(linked_list, copy);
+                // first->next = unknown, last->prev = uknown
+                edges.push_back(SMGEdge(next_obj_id, unknown.id, 0));
+                int copy_prev_id = copy.getPrevObjectId(edges);
+                edges.push_back(SMGEdge(copy_prev_id, unknown.id, 0));
+                */
+                chainListSegments(linked_list, copy);
 
-                    // first->next = unknown, last->prev = uknown
-                    edges.push_back(SMGEdge(next_obj_id, unknown.id, 0));
-                    int copy_prev_id = copy.getPrevObjectId(edges);
-                    edges.push_back(SMGEdge(copy_prev_id, unknown.id, 0));
+                // last->next = next_value
+                int copy_next_id = copy.getNextObjectId(edges);
+                edges.push_back(SMGEdge(copy_next_id, next_value->id, 0));
 
-                    // last->next = next_value
-                    int copy_next_id = copy.getNextObjectId(edges);
-                    edges.push_back(SMGEdge(copy_next_id, next_value->id, 0));
+                // connect last with the copied segment
+                if (last_value){
+                    edges.push_back(SMGEdge(last_value->id, copy.obj_id, 0));
+                }
+                // remove outdated connections
+                int first_obj = linked_list.obj_id;
+                int next_value_id = next_value->id;
+                if (last_value){
+                    int last_value_id = last_value->id;
+                    edges.erase(std::remove_if(edges.begin(), edges.end(), [&last_value_id, &first_obj](SMGEdge e){return e.from == last_value_id && e.to == first_obj;}), edges.end());
+                }
+                edges.erase(std::remove_if(edges.begin(), edges.end(), [&next_obj_id, &next_value_id](SMGEdge e){return e.from == next_obj_id && e.to == next_value_id;}), edges.end());
 
-                    // connect last with the copied segment
-                    if (last_value){
-                        edges.push_back(SMGEdge(last_value->id, copy.obj_id, 0));
-                    }
-                    // remove outdated connections
-                    int first_obj = linked_list.obj_id;
-                    int next_value_id = next_value->id;
-                    if (last_value){
-                        int last_value_id = last_value->id;
-                        edges.erase(std::remove_if(edges.begin(), edges.end(), [&last_value_id, &first_obj](SMGEdge e){return e.from == last_value_id && e.to == first_obj;}), edges.end());
-                    }
-                    edges.erase(std::remove_if(edges.begin(), edges.end(), [&next_obj_id, &next_value_id](SMGEdge e){return e.from == next_obj_id && e.to == next_value_id;}), edges.end());
-
-                    expandCompositeObject(copy, newObjects);
-                    expandCompositeObject(linked_list, newObjects);
+                expandCompositeObject(copy, newObjects);
+                expandCompositeObject(linked_list, newObjects);
+                /*
                 } else {
                     llvm::errs() << "Unknown seg_min_len in a linked list composite object id: " << linked_list.id << "\n";
                 }
+                */
                 objects.erase(it);
             } else {
                 ++it;
@@ -835,7 +840,7 @@ class SMG {
 
                     auto it = getObjectById(obj_id, objects);
                     if (it == objects.end()){
-                        llvm::errs() << "ID " << obj_id << " not found!" << "\n";
+                        llvm::errs() << "ID " << obj_id << " not found when merging variables!" << "\n";
                         continue;
                     }
                     if (!std::holds_alternative<SMGRegionObject>(*it)){
@@ -881,7 +886,7 @@ class SMG {
             int val_id = val.id;
             auto it = getObjectById(obj_id, objects);
             if (it == objects.end()){
-                llvm::errs() << "ID " << obj_id << " not found!" << "\n";
+                llvm::errs() << "ID " << obj_id << " not found when merging regions!" << "\n";
                 continue;
             }
             if (!std::holds_alternative<SMGRegionObject>(*it)){
@@ -1211,10 +1216,10 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
         PTA pts;
         PTA returns;
         for (auto &F : *_module){
+            SMGPTA local_pts;
             for (llvm::inst_iterator I = llvm::inst_begin(F), E = llvm::inst_end(F); I != E; ++I){
-                //llvm::errs() << "inst: " << *I  << "\n";
+                llvm::errs() << "inst: " << *I  << "\n";
                 llvm::DebugLoc dbg = I->getDebugLoc();
-                SMGPTA local_pts;
                 if (dbg){
                     CodeLoc loc = {dbg.getLine(), dbg.getCol()};
                     auto local_pts_it = global_smg_pts.upper_bound(loc);
@@ -1223,7 +1228,7 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
                     }
                     local_pts = local_pts_it->second;
                     //llvm::errs() << "line: " << dbg.getLine() << ", col: " << dbg.getCol() << "\n";
-                    //dumpSMGPTAPointsTo(local_pts);
+                    dumpSMGPTAPointsTo(local_pts);
                 }
                 llvm::Value *V = llvm::dyn_cast<llvm::Value>(&(*I));
                 if (llvm::isa <llvm::LoadInst> (*I)){
@@ -1291,13 +1296,33 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
                         llvm::errs() << "base offset: " << base_offset << "\n";
                         llvm::errs() << "offset: " << offset << "\n";
                         */
-                        pts[V].first.insert(LLVMPointer(target, Offset(base_offset + offset.getSExtValue())));
+                        LLVMPointer ptr(target, Offset(base_offset + offset.getSExtValue()));
+                        pts[V].first.insert(ptr);
+                        /*
+                        if (local_pts.count(ptr)){
+                            mergePTAPairs(pts[V], local_pts[ptr]);
+                        } else {
+                            pts[V].first.insert(ptr);
+                        }
+                        */
                     }
-                    if (pts[op].second.null){
-                        pts[V].second.nullWithOffset = true;;
-                    }
-                    if (pts[op].second.unknown || pts[op].second.nullWithOffset){
-                        pts[V].second.unknown = true;;
+                    if (offset.getSExtValue() == 0){
+                        if (pts[op].second.null){
+                            pts[V].second.null = true;
+                        }
+                        if (pts[op].second.nullWithOffset){
+                            pts[V].second.nullWithOffset = true;
+                        }
+                        if (pts[op].second.unknown){
+                            pts[V].second.unknown = true;
+                        }
+                    } else {
+                        if (pts[op].second.null){
+                            pts[V].second.nullWithOffset = true;
+                        }
+                        if (pts[op].second.unknown || pts[op].second.nullWithOffset){
+                            pts[V].second.unknown = true;
+                        }
                     }
                 } else if (llvm::isa <llvm::StoreInst> (*I)){
                     continue;
@@ -1378,6 +1403,15 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
         return true;
     }
 
+    void tryToSaveSemiKilledVariables(SMGPTA &first, SMGPTA second){
+        for (auto PTPair : second){
+            auto target = PTPair.first; 
+            if (first.count(target) && first[target].first.size() == 0 && count_flags(first[target].second) == 0){ // still present but empty
+                mergePTAPairs(first[target], PTPair.second);
+            }
+        }
+    }
+
     void filterGlobalPTA(GlobalSMGPTA &target, GlobalSMGPTA source){
         auto previous_it = source.begin();
         SMGPTA previous_pts = previous_it->second;
@@ -1387,10 +1421,13 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
             SMGPTA local_pts = codelocPTAPair.second;
             if (!is_subset(local_pts, previous_pts)){
                 //llvm::errs() << codeloc.first << ", " << codeloc.second << " prej neni subset" << "\n";
+                tryToSaveSemiKilledVariables(local_pts, previous_pts);
                 target[codeloc] = local_pts;
                 previous_pts = local_pts;
+            /*
             } else {
-                //llvm::errs() << codeloc.first << ", " << codeloc.second << " prej je subset" << "\n";
+                llvm::errs() << codeloc.first << ", " << codeloc.second << " prej je subset" << "\n";
+            */
             }
         }
     }
@@ -1405,18 +1442,6 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
             return;
         }
 
-        /*
-        if (target.count(codeloc) && !is_subset(target[codeloc], source)){
-            llvm::errs() << codeloc.first << ", " << codeloc.second << " pri pridavani prej neni subset!" << "\n";
-        }
-
-        if (target.count(codeloc)){
-            llvm::errs() << "PREPISUJU!\n!\n!\n!\n!\n!\n!\nNahrazuju:" << "\n";
-            dumpSMGPTAPointsTo(target[codeloc]);
-            llvm::errs() << "\nZa:" << "\n";
-            dumpSMGPTAPointsTo(source);
-        }
-        */
         if (target.count(codeloc)){
             /*
             llvm::errs() << "merguju!\n!\n!\n!\n!" << "\n";
@@ -1482,7 +1507,7 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
             globalPTAAdd(global_pta, smg.getPointsToSets(), codeloc);
             //llvm::errs() << "Done merging information with other loaded SMGs.\n";
         }
-        //dumpGlobalSMGPTAPointsTo(global_pta);
+        dumpGlobalSMGPTAPointsTo(global_pta);
         if(global_pta.size() == 0){
             llvm::errs() << "No SMG data provided.\n";
             return false;
@@ -1491,7 +1516,7 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
         GlobalSMGPTA filtered_global_pta;
         filterGlobalPTA(filtered_global_pta, global_pta);
 
-        //dumpGlobalSMGPTAPointsTo(filtered_global_pta);
+        dumpGlobalSMGPTAPointsTo(filtered_global_pta);
 
         //llvm::errs() << "Using SMG points-to information to calculate the DG expected sets.\n";
         _pts = calculateAssistedPTA(filtered_global_pta);
