@@ -301,7 +301,6 @@ class LLVMPointerGraphBuilder {
         return nullptr;
     }
 
-  public:
     // get the built nodes for this value or null
     PSNodesSeq *getNodes(const llvm::Value *val) {
         auto it = nodes_map.find(val);
@@ -312,7 +311,6 @@ class LLVMPointerGraphBuilder {
         // is always the last
         return &it->second;
     }
-  private:
 
     PSNodesSeq &addNode(const llvm::Value *val, PSNode *node) {
         assert(nodes_map.find(val) == nodes_map.end());

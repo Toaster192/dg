@@ -121,11 +121,7 @@ class SMG {
         }
         //llvm::errs() << "Parsing SMG objects" << "\n";
         for (auto o : smg_json["objects"]){
-            if (o["label"] == "field"){
-                objects.push_back(o.template get<SMGVarObject>());
-            } else {
-                llvm::errs() << "Unknown object label: " << o["label"].template get<std::string>()  << "\n";
-            }
+            objects.push_back(o.template get<SMGObject>());
         }
         //llvm::errs() << "Parsing SMG edges" << "\n";
         for (auto e : smg_json["edges"]){
@@ -133,14 +129,7 @@ class SMG {
         }
         //llvm::errs() << "Parsing SMG composite objects" << "\n";
         for (auto o : smg_json["compositeObjects"]){
-            std::string label = o["label"].template get<std::string>();
-            if (label == "region"){
-                objects.push_back(o.template get<SMGRegionCompositeObject>());
-            } else if (label == "DLS" || label == "SLS"){
-                objects.push_back(o.template get<SMGLinkedListCompositeObject>());
-            } else {
-                llvm::errs() << "Unknown composite object label: " << label << "\n";
-            }
+            objects.push_back(o.template get<SMGObject>());
         }
 
         return;
@@ -148,7 +137,7 @@ class SMG {
 
   public:
     std::vector<SMGValue> values;
-    std::vector<SMGObjectTypeVariant> objects;
+    std::vector<SMGObject> objects;
     std::vector<SMGEdge> edges;
 
     SMG(json &smg_json){
@@ -158,7 +147,7 @@ class SMG {
 
     void dump(){
         for (auto obj : objects){
-            llvm::errs() << "obj: " << objectVariantGetId(obj) << "\n";
+            llvm::errs() << "obj: " << obj.id << ", " << ToString(obj.type) << "\n";
         }
         for (auto val : values){
             llvm::errs() << "val: " << val.id << ", " << val.label << "\n";
@@ -221,13 +210,6 @@ class SMG {
                         } else {
                             pointsToSets[LLVMPointer(mapping.first, offset)] = std::make_pair(PTSet, PTFlags);
                         }
-                    /*
-                    } else if (smgValue->is_mem){
-                        SMGPTASet PTSet;
-                        SMGPTAFlags PTFlags = {false};
-                        Offset offset(0);
-                        pointsToSets[LLVMPointer(mapping.first, offset)] = std::make_pair(PTSet, PTFlags);
-                    */
                     }
                 }
                 if (!has_edge){
@@ -242,12 +224,11 @@ class SMG {
     }
 
     void replaceGlobals(){
-        std::vector<SMGVarObject*> globals;
+        std::vector<SMGObject*> globals;
         for (auto &obj : objects){
-            if (std::holds_alternative<SMGVarObject>(obj)){
-                SMGVarObject &var = std::get<SMGVarObject>(obj);
-                if (var.llvm_val && llvm::isa<llvm::GlobalVariable>(var.llvm_val)){
-                    globals.push_back(&var);
+            if (obj.type == VAR){
+                if (obj.llvm_val && llvm::isa<llvm::GlobalVariable>(obj.llvm_val)){
+                    globals.push_back(&obj);
                 }
             }
         }
@@ -265,12 +246,12 @@ class SMG {
         }
         // Needs to be done in a separate loop otherwise the pointers get shifted
         for (int var_id : to_remove){
-            objects.erase(std::remove_if(objects.begin(), objects.end(), [&var_id](SMGObjectTypeVariant o){return objectVariantGetId(o) == var_id;}), objects.end());
+            objects.erase(std::remove_if(objects.begin(), objects.end(), [&var_id](SMGObject o){return o.id == var_id;}), objects.end());
         }
         return;
     }
     
-    SMGValue* getFirstValueByObjID(int obj_id){
+    SMGValue* getTSFirstValueByObjID(int obj_id){
         // look for offset == 0 first
         for (auto &value : values){
             if (value.target_spec_label == "TS_FIRST" && value.obj == obj_id && value.offset_low == 0){
@@ -285,6 +266,21 @@ class SMG {
         return nullptr;
     }
 
+    SMGValue* getTSLastValueByObjID(int obj_id){
+        // look for offset == 0 first
+        for (auto &value : values){
+            if (value.target_spec_label == "TS_LAST" && value.obj == obj_id && value.offset_low == 0){
+                 return &value;
+            }
+        }
+        for (auto &value : values){
+            if (value.target_spec_label == "TS_LAST" && value.obj == obj_id){
+                 return &value;
+            }
+        }
+        return nullptr;
+    }
+
     void replaceTS_ALL(){
         auto it = values.begin();
         while (it != values.end()){
@@ -293,7 +289,7 @@ class SMG {
                 ++it;
                 continue;
             }
-            SMGValue* first_value = getFirstValueByObjID(val.obj);
+            SMGValue* first_value = getTSFirstValueByObjID(val.obj);
             if (first_value == nullptr){
                 llvm::errs() << "TS_ALL ID " << val.id << " no TS_FIRST found to point to." << "\n";
             }
@@ -316,24 +312,21 @@ class SMG {
     }
 
     void mapLLVMValues(llvm::Module *m){
-        std::vector<SMGVarObject*> vars;
+        std::vector<SMGObject*> vars;
         for (auto &obj : objects){
-            if (std::holds_alternative<SMGVarObject>(obj)){
-                SMGVarObject &var = std::get<SMGVarObject>(obj);
-                if (var.var_name != ""){
-                    vars.push_back(&var);
+            if (obj.type == VAR){
+                if (obj.var_name != ""){
+                    vars.push_back(&obj);
                 }
             }
         }
 
         for (auto &obj : objects){
-            if (std::holds_alternative<SMGRegionCompositeObject>(obj)){
-                SMGRegionCompositeObject &region = std::get<SMGRegionCompositeObject>(obj);
-                for (auto &region_obj : region.objects){
-                    if (std::holds_alternative<SMGVarObject>(region_obj)){
-                        SMGVarObject &var = std::get<SMGVarObject>(region_obj);
-                        if (var.var_name != ""){
-                            vars.push_back(&var);
+            if (obj.type == COMPOSITEREGION){
+                for (auto &region_obj : obj.objects){
+                    if (region_obj.type == VAR){
+                        if (region_obj.var_name != ""){
+                            vars.push_back(&region_obj);
                         }
                     }
                 }
@@ -393,7 +386,7 @@ class SMG {
             }
         }
         // Map global variables
-        std::vector<SMGVarObject*>::iterator it = vars.begin();
+        std::vector<SMGObject*>::iterator it = vars.begin();
         while (it != vars.end()){
             auto var = *it;
 
@@ -536,9 +529,9 @@ class SMG {
         return nullptr;
     }
     
-    void removeEdgesOfObjects(std::vector<SMGSimpleObjectTypeVariant> objects){
+    void removeEdgesOfObjects(std::vector<SMGObject> objects){
         for (auto obj : objects){
-            int id = objectVariantGetId(obj);
+            int id = obj.id;
             edges.erase(std::remove_if(edges.begin(), edges.end(), [&id](SMGEdge e){return e.to == id || e.from == id;}), edges.end());
         }
     }
@@ -548,10 +541,9 @@ class SMG {
         auto it = objects.begin();
         while (it != objects.end()){
             auto obj = *it;
-            if (std::holds_alternative<SMGVarObject>(obj)){
-                SMGVarObject var = std::get<SMGVarObject>(obj);
-                if (var.var_name == ""){
-                    int var_id = var.id;
+            if (obj.type == VAR){
+                if (obj.var_name == ""){
+                    int var_id = obj.id;
 
                     edges.erase(std::remove_if(edges.begin(), edges.end(), [&var_id](SMGEdge e){return e.from == var_id || e.to == var_id;}), edges.end());
 
@@ -564,54 +556,38 @@ class SMG {
         //llvm::errs() << "Done removing anonymous objects, total objects: " << objects.size() << "\n";
     }
 
-    void copyCompositeObjectObjects(SMGLinkedListCompositeObject &linked_list, SMGLinkedListCompositeObject old){
+    void copyLinkedListObjectObjects(SMGObject &linked_list, SMGObject old){
         for(auto obj : old.objects){
             int new_obj_id = findUniqueId(values, objects, edges);
-            if (std::holds_alternative<SMGRegionObject>(obj)){
-                SMGRegionObject region = std::get<SMGRegionObject>(obj);
-                linked_list.objects.push_back(SMGRegionObject(region, new_obj_id));
+            if (obj.type == REGION){
+                linked_list.objects.push_back(SMGObject::copyRegionObject(obj, new_obj_id));
                 linked_list.obj_id = new_obj_id;
                 break;
             }
         }
         for(auto obj : old.objects){
             int new_obj_id = findUniqueId(values, objects, edges);
-            if (std::holds_alternative<SMGEmptyObject>(obj)){
-                SMGEmptyObject empty = std::get<SMGEmptyObject>(obj);
-                linked_list.objects.push_back(SMGEmptyObject(empty, new_obj_id));
-            } else if (std::holds_alternative<SMGRegionObject>(obj)){
+            if (obj.type == EMPTY){
+                linked_list.objects.push_back(SMGObject::copyEmptyObject(obj, new_obj_id));
+            } else if (obj.type == REGION){
                 continue;
             } else {
-                llvm::errs() << "Unknown object type in copyCompositeObjectObjects" << "\n";
+                llvm::errs() << "Unknown object type in copyLinkedListObjectObjects\n";
             }
             int old_obj_id = old.obj_id;
-            int target = objectVariantGetId(obj);
+            int target = obj.id;
             SMGEdge* edge = getEdge(old_obj_id, target);
             edges.push_back(SMGEdge(linked_list.obj_id, new_obj_id, edge->label, edge->off));
         }
     }
 
-    void expandCompositeObject(SMGRegionCompositeObject region, std::vector<SMGObjectTypeVariant> &newObjects){
+    void expandCompositeObject(SMGObject region, std::vector<SMGObject> &newObjects){
         for (auto &o : region.objects){
-            if (auto converted = convertSMGObjectVariant(o)){
-                newObjects.push_back(*converted);
-            } else {
-                llvm::errs() << "Failed to convert to object variant in composite object " << region.id << "\n";
-            }
+            newObjects.push_back(o);
         }
     }
 
-    void expandCompositeObject(SMGLinkedListCompositeObject linked_list, std::vector<SMGObjectTypeVariant> &newObjects){
-        for (auto &o : linked_list.objects){
-            if (auto converted = convertSMGObjectVariant(o)){
-                newObjects.push_back(*converted);
-            } else {
-                llvm::errs() << "Failed to convert to object variant in composite object " << linked_list.id << "\n";
-            }
-        }
-    }
-
-    void chainListSegments(SMGLinkedListCompositeObject first, SMGLinkedListCompositeObject second){
+    void chainListSegments(SMGObject first, SMGObject second){
         // connect the two segments via next and prev pointers
         int first_next = first.getNextObjectId(edges);
         edges.push_back(SMGEdge(first_next, second.obj_id, 0));
@@ -626,7 +602,7 @@ class SMG {
         }
         // copy the data pointers of the first segment to the second
         for (auto o : first.objects){
-            int o_id = objectVariantGetId(o);
+            int o_id = o.id;
             if (o_id == first_next){
                 continue;
             }
@@ -650,29 +626,27 @@ class SMG {
 
     void simplifyCompositeObjects(){
         //llvm::errs() << "Simplifying composite objects, total objects: " << objects.size() << "\n";
-        std::vector<SMGObjectTypeVariant> newObjects;
+        std::vector<SMGObject> newObjects;
         auto it = objects.begin();
         while (it != objects.end()){
             auto obj = *it;
-            if (std::holds_alternative<SMGRegionCompositeObject>(obj)){
-                SMGRegionCompositeObject region = std::get<SMGRegionCompositeObject>(obj);
-                expandCompositeObject(region, newObjects);
+            if (obj.type == COMPOSITEREGION){
+                expandCompositeObject(obj, newObjects);
                 objects.erase(it);
-            } else if (std::holds_alternative<SMGLinkedListCompositeObject>(obj)){
-                SMGLinkedListCompositeObject linked_list = std::get<SMGLinkedListCompositeObject>(obj);
-                //SMGValue* first_value = linked_list.getFirstValue(values);
-                SMGValue* last_value = linked_list.getLastValue(values);
+            } else if (obj.type == LINKEDLIST){
+                SMGObject &linked_list = obj;
+                SMGValue* last_value = getTSLastValueByObjID(linked_list.obj_id);
 
                 int next_obj_id = linked_list.getNextObjectId(edges);
-                SMGEmptyObject* next_obj = &std::get<SMGEmptyObject>(*getObjectById(next_obj_id, linked_list.objects));
+                SMGObject* next_obj = &(*getObjectById(next_obj_id, linked_list.objects));
                 SMGValue* next_value = getObjectsPtrValue(next_obj->id);
 
                 int prev_obj_id = 0;
-                SMGEmptyObject* prev_obj = nullptr;
+                SMGObject* prev_obj = nullptr;
                 SMGValue* prev_value = nullptr;
                 if(linked_list.label == "DLS"){
                     prev_obj_id = linked_list.getNextObjectId(edges);
-                    prev_obj = &std::get<SMGEmptyObject>(*getObjectById(prev_obj_id, linked_list.objects));
+                    prev_obj = &(*getObjectById(prev_obj_id, linked_list.objects));
                     prev_value = getObjectsPtrValue(prev_obj->id);
                 }
 
@@ -736,8 +710,8 @@ class SMG {
                 } else if (linked_list.seg_min_len == 1 || linked_list.seg_min_len == 2){
                 */
                 // copy the linked list segment
-                SMGLinkedListCompositeObject copy = SMGLinkedListCompositeObject(linked_list, findUniqueId(values, objects, edges));
-                copyCompositeObjectObjects(copy, linked_list);
+                SMGObject copy = SMGObject::copyLinkedList(linked_list, findUniqueId(values, objects, edges));
+                copyLinkedListObjectObjects(copy, linked_list);
 
                 // set the last value .obj attribute to the new segment region
                 if(last_value){
@@ -801,10 +775,10 @@ class SMG {
     }
 
     void simplifyValues(){
-        std::vector<SMGVarObject> varObjects;
+        std::vector<SMGObject> varObjects;
         for (auto &obj : objects){
-            if (std::holds_alternative<SMGVarObject>(obj)){
-                varObjects.push_back(std::get<SMGVarObject>(obj));
+            if (obj.type == VAR){
+                varObjects.push_back(obj);
             }
         }
         //llvm::errs() << "Removing non-pointer values (current total: " << values.size() << ")\n";
@@ -843,11 +817,11 @@ class SMG {
                         llvm::errs() << "ID " << obj_id << " not found when merging variables!" << "\n";
                         continue;
                     }
-                    if (!std::holds_alternative<SMGRegionObject>(*it)){
+                    if (it->type != REGION){
                         llvm::errs() << "ID " << obj_id << " expected region object!" << "\n";
                         continue;
                     }
-                    SMGRegionObject obj = std::get<SMGRegionObject>(*it);
+                    SMGObject obj = *it;
 
                     val.memory_location = obj.label;
                     val.size_low = obj.size_low;
@@ -862,7 +836,7 @@ class SMG {
                     edges.erase(std::remove_if(edges.begin(), edges.end(), [&val_id](SMGEdge e){return e.to == val_id && e.from == val_id;}), edges.end());
                     objects.erase(it);
 
-                    objects.erase(std::remove_if(objects.begin(), objects.end(), [&var_id](SMGObjectTypeVariant o){return objectVariantGetId(o) == var_id;}), objects.end());
+                    objects.erase(std::remove_if(objects.begin(), objects.end(), [&var_id](SMGObject o){return o.id == var_id;}), objects.end());
                     break;
                 }
             }
@@ -889,10 +863,10 @@ class SMG {
                 llvm::errs() << "ID " << obj_id << " not found when merging regions!" << "\n";
                 continue;
             }
-            if (!std::holds_alternative<SMGRegionObject>(*it)){
+            if (it->type != REGION){
                 continue;
             }
-            SMGRegionObject obj = std::get<SMGRegionObject>(*it);
+            SMGObject obj = *it;
 
             val.memory_location = obj.label;
             val.size_low = obj.size_low;
@@ -923,7 +897,7 @@ class SMG {
 
                     edges.erase(std::remove_if(edges.begin(), edges.end(), [&val_id](SMGEdge e){return e.to == val_id && e.from == val_id;}), edges.end());
 
-                    objects.erase(std::remove_if(objects.begin(), objects.end(), [&var_id](SMGObjectTypeVariant o){return objectVariantGetId(o) == var_id;}), objects.end());
+                    objects.erase(std::remove_if(objects.begin(), objects.end(), [&var_id](SMGObject o){return o.id == var_id;}), objects.end());
                     break;
                 }
             }
@@ -949,23 +923,15 @@ class SMG {
 
     void simplifyEmptyObjects(){
         //llvm::errs() << "Finding empty objects in " << objects.size() << " objects." << "\n";
-        std::vector<SMGEmptyObject> emptyObjects;
+        std::vector<SMGObject> emptyObjects;
         for (auto &obj : objects){
-            if (std::holds_alternative<SMGEmptyObject>(obj)){
-                emptyObjects.push_back(std::get<SMGEmptyObject>(obj));
-            } else if (std::holds_alternative<SMGRegionObject>(obj)){
-                continue;
-            } else if (std::holds_alternative<SMGGenericObject>(obj)){
-                continue;
-            } else if (std::holds_alternative<SMGVarObject>(obj)){
-                continue;
-            } else {
-                llvm::errs() << "Unknown object type found in simplifyEmptyObjects()" << "\n";
+            if (obj.type == EMPTY){
+                emptyObjects.push_back(obj);
             }
         }
 
         //llvm::errs() << "Found " << emptyObjects.size() << " empty objects." << "\n";
-        for (SMGEmptyObject &empty : emptyObjects){
+        for (SMGObject &empty : emptyObjects){
             auto connected_edges = getEdgesWithId(empty.id, edges);
             auto to_edges = connected_edges.first;
             auto from_edges = connected_edges.second;
@@ -975,7 +941,7 @@ class SMG {
                 for (auto from_edge : from_edges){
                     edges.erase(std::find(edges.begin(), edges.end(), *from_edge));
                 }
-                objects.erase(std::remove_if(objects.begin(), objects.end(), [&empty](SMGObjectTypeVariant o){return objectVariantGetId(o) == empty.id;}), objects.end());
+                objects.erase(std::remove_if(objects.begin(), objects.end(), [&empty](SMGObject o){return o.id == empty.id;}), objects.end());
                 continue;
             }
 
@@ -990,7 +956,7 @@ class SMG {
             }
 
             edges.erase(std::find(edges.begin(), edges.end(), to_edge));
-            objects.erase(std::remove_if(objects.begin(), objects.end(), [&empty](SMGObjectTypeVariant o){return objectVariantGetId(o) == empty.id;}), objects.end());
+            objects.erase(std::remove_if(objects.begin(), objects.end(), [&empty](SMGObject o){return o.id == empty.id;}), objects.end());
         }
         //llvm::errs() << "Done removing empty objects at " << objects.size() << ".\n";
     }
@@ -1012,23 +978,6 @@ class SMG {
         //llvm::errs() << "Done removing unmerged values, total values: " << values.size() << "\n";
     }
 
-    void removeStrandedValues(){
-        //llvm::errs() << "Removing stranded values, total values: " << values.size() << "\n";
-        auto it = values.begin();
-        while (it != values.end()){
-            auto val = *it;
-            auto connected_edges = getEdgesWithId(val.id, edges);
-            auto to_edges = connected_edges.first;
-            auto from_edges = connected_edges.second;
-            if ((to_edges.size() + from_edges.size()) == 0){
-                values.erase(it);
-            } else {
-                ++it;
-            }
-        }
-        //llvm::errs() << "Done removing stranded values, total values: " << values.size() << "\n";
-    }
-
     void simplify(){
         replaceGlobals();
         replaceTS_ALL();
@@ -1037,7 +986,6 @@ class SMG {
         simplifyEmptyObjects();
         removeUnmergedValues();
         removeAnonymousObjects();
-        //removeStrandedValues();
         //llvm::errs() << "Simplified to " << values.size() << " values, "
         //             << objects.size() << " objects, "
         //             << edges.size() << " edges.\n";
@@ -1047,18 +995,7 @@ class SMG {
 class SMGLLVMPointsToSet : public LLVMPointsToSetImplTemplate<SMGPTASet> {
     SMGPTAFlags flags{false, false, false, false};
     int flag_count;
-    /*
-    void _findNextReal() override {
-        while (it != PTSet.end()) {
-            if (*it.first.empty()){
-                break;
-            } else {
-                ++it;
-            }
-        }
-    }
-    */
-    void _findNextReal() override {} // TODO maybe not needed?
+    void _findNextReal() override {} // Doesn't seem needed
 
     void set_flags(SMGPTAFlags F){
         flags.null = F.null;
@@ -1075,16 +1012,6 @@ class SMGLLVMPointsToSet : public LLVMPointsToSetImplTemplate<SMGPTASet> {
         set_flags(F);
     }
 
-    /*
-    size_t size() const override { return PTSet.count(); }
-
-    LLVMPointer getKnownSingleton() const override {
-        assert(isKnownSingleton());
-        return {_getValue(*PTSet.begin()), Offset::UNKNOWN};
-    }
-    */
-
-    // TODO these methods need proper implementation
     bool hasUnknown() const override {
         return flags.unknown;
     }
@@ -1198,19 +1125,6 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
             dumpSMGPTAPointsTo(codelocPTAPair.second);
         }
     }
-
-
-    /*
-    std::vector<int> findOffsets(const SMGPTA pta, llvm::Value *value){
-        std::vector<int> offsets;
-        for (auto PTPair : pta){
-            if (PTPair.first.value == value){
-                offsets.push_back(*PTPair.first.offset);
-            }
-        }
-        return offsets;
-    }
-    */
 
     PTA calculateAssistedPTA(GlobalSMGPTA global_smg_pts){
         PTA pts;
@@ -1366,24 +1280,6 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
         }
         return pts;
     }
-
-    /*
-    void smg_pts_merge(SMGPTA &target, SMGPTA source){
-        // SMGPTA = std::unordered_map<const llvm::Value *, std::pair<SMGPTASet, SMGPTAFlags>>;
-        for (auto sourcePTSPair : source){
-            if(target.count(sourcePTSPair.first)){
-                SMGPTASet& values = sourcePTSPair.second.first;
-                SMGPTAFlags& flags = sourcePTSPair.second.second;
-                for (auto ptPair : values){
-                    target[sourcePTSPair.first].first.insert(ptPair);
-                }
-                merge_flags(&target[sourcePTSPair.first].second, flags);
-            } else {
-                target[sourcePTSPair.first] = sourcePTSPair.second;
-            }
-        }
-    }
-    */
 
     bool is_subset(SMGPTA subset, SMGPTA superset){
         for (auto subsetEntry : subset){
