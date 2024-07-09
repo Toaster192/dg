@@ -905,7 +905,7 @@ int main(int argc, char *argv[]) {
                     auto pts = llvmpta->getLLVMPointsTo(&I);
                     if (cmp){
                         auto dgpts = dgpta->getLLVMPointsTo(&I);
-                        /**/
+                        /*
                         std::cout << "smg, dg\n";
 
                         std::cout << valToStr(&I) << "\n";
@@ -949,7 +949,7 @@ int main(int argc, char *argv[]) {
                         if (dgpts.hasInvalidated()) {
                             std::cout << "  -> invalidated\n";
                         }
-                        /**/
+                        */
 
                         if (pts.isUnknownSingleton() && dgpts.isUnknownSingleton()) {
                             same++;

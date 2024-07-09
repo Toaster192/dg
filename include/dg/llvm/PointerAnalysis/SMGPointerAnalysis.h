@@ -1218,7 +1218,7 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
         for (auto &F : *_module){
             SMGPTA local_pts;
             for (llvm::inst_iterator I = llvm::inst_begin(F), E = llvm::inst_end(F); I != E; ++I){
-                llvm::errs() << "inst: " << *I  << "\n";
+                //llvm::errs() << "inst: " << *I  << "\n";
                 llvm::DebugLoc dbg = I->getDebugLoc();
                 if (dbg){
                     CodeLoc loc = {dbg.getLine(), dbg.getCol()};
@@ -1228,7 +1228,7 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
                     }
                     local_pts = local_pts_it->second;
                     //llvm::errs() << "line: " << dbg.getLine() << ", col: " << dbg.getCol() << "\n";
-                    dumpSMGPTAPointsTo(local_pts);
+                    //dumpSMGPTAPointsTo(local_pts);
                 }
                 llvm::Value *V = llvm::dyn_cast<llvm::Value>(&(*I));
                 if (llvm::isa <llvm::LoadInst> (*I)){
@@ -1507,7 +1507,7 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
             globalPTAAdd(global_pta, smg.getPointsToSets(), codeloc);
             //llvm::errs() << "Done merging information with other loaded SMGs.\n";
         }
-        dumpGlobalSMGPTAPointsTo(global_pta);
+        //dumpGlobalSMGPTAPointsTo(global_pta);
         if(global_pta.size() == 0){
             llvm::errs() << "No SMG data provided.\n";
             return false;
@@ -1516,7 +1516,7 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
         GlobalSMGPTA filtered_global_pta;
         filterGlobalPTA(filtered_global_pta, global_pta);
 
-        dumpGlobalSMGPTAPointsTo(filtered_global_pta);
+        //dumpGlobalSMGPTAPointsTo(filtered_global_pta);
 
         //llvm::errs() << "Using SMG points-to information to calculate the DG expected sets.\n";
         _pts = calculateAssistedPTA(filtered_global_pta);
