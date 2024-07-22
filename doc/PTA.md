@@ -75,7 +75,8 @@ Possible options are:
 
 Option                | Values      | Description
 ----------------------|-------------|-------------
-`-pta`                | fi, fs, inv, svf | Type of analysis - flow-insensitive, flow-sensitive,                                     flow-sensitive with tracking invalidated memory, and SVF (if available)
+`-pta`                | fi, fs, inv, svf, smg | Type of analysis - flow-insensitive, flow-sensitive,                                     flow-sensitive with tracking invalidated memory, SVF (if available) and SMG-based (if provided with SMG .json files)
+`-smg-dir`            | PATH        | Set the path to a directory containing SMG .json files for the SMG-based points-to analysits
 `-pta-field-sensitive` | BYTES       | Set field sensitivity: how many bytes to track on each object
 `-callgraph`          |             | Dump also call graph
 `-callgraph-only`     |             | Dump only call graph

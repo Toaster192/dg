@@ -282,7 +282,8 @@ Option             | Arguments        | Description
 `-2c`              | crit1,crit2,...  | A comma-separated list of secondary slicing criteria
 `-annotate`        | val1,val2,...    | Generate annotated bitcode. The argument is a comma-separated list of `slice`,`pta`,`dd`,`cd`,`memacc`
 `-allocation-funs` | func:type,...    | Treat the given functions as allocations. `type` is one of `malloc`, `calloc`, `realloc`
-`-pta`             | fi, fs, svf       | Set PTA type to flow-insensitive, flow-sensitive, or SVF (if supported)
+`-pta`             | fi, fs, svf, smg | Set PTA type to flow-insensitive, flow-sensitive, SVF (if supported) or SMG-based (requires SMG .json files)
+`-smg-dir`         | PATH             | Set the path to a directory containing SMG .json files for the SMG-based points-to analysits
 `-cda`             | standard, ntscd  | Set the type of used control dependencies (termination insensitive or sensitive)
 `-interproc-cd`    |                  | Take into account also not returning from function calls (on by default)
 `-dump-dg`         |                  | Dump dependence graph to .dot file
