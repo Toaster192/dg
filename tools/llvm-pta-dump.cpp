@@ -824,17 +824,9 @@ int main(int argc, char *argv[]) {
     if (!dump_ir) {
         std::unique_ptr<LLVMPointerAnalysis> llvmpta;
         std::unique_ptr<LLVMPointerAnalysis> dgpta;
-        bool cmp = false;
-        int same = 0;
-        int more_accurate = 0;
-        int errors = 0;
 
         if (opts.isSMG()){
             llvmpta.reset(new SMGPointerAnalysis(M.get(), opts));
-            auto dgopts = opts;
-            dgopts.analysisType = LLVMPointerAnalysisOptions::AnalysisType::fs;
-            dgpta.reset(new DGLLVMPointerAnalysis(M.get(), dgopts));
-            cmp = true;
 	} else{
 #ifdef HAVE_SVF
             if (opts.isSVF())
@@ -847,13 +839,6 @@ int main(int argc, char *argv[]) {
         llvmpta->run();
         tm.stop();
         tm.report("INFO: Pointer analysis took");
-
-        if (cmp){
-            tm.start();
-            dgpta->run();
-            tm.stop();
-            tm.report("INFO: Pointer analysis took");
-        }
 
         if (_stats) {
             if (opts.isSVF()) {
@@ -903,93 +888,6 @@ int main(int argc, char *argv[]) {
 
 		            //llvm::errs() << "Getting points to for Instruction: " << I << "\n";
                     auto pts = llvmpta->getLLVMPointsTo(&I);
-                    if (cmp){
-                        auto dgpts = dgpta->getLLVMPointsTo(&I);
-                        /*
-                        std::cout << "smg, dg\n";
-
-                        std::cout << valToStr(&I) << "\n";
-
-                        if (pts.isUnknownSingleton()) {
-                            std::cout << "  -> no-information\n";
-                        }
-                        for (const auto &ptr : pts) {
-                            std::cout << "  -> " << valToStr(ptr.value) << " (+" << ptr.offset << ")\n";
-                        }
-                        if (pts.hasUnknown()) {
-                            std::cout << "  -> unknown\n";
-                        }
-                        if (pts.hasNull()) {
-                            std::cout << "  -> null\n";
-                        }
-                        if (pts.hasNullWithOffset()) {
-                            std::cout << "  -> null + ?\n";
-                        }
-                        if (pts.hasInvalidated()) {
-                            std::cout << "  -> invalidated\n";
-                        }
-
-                        std::cout << valToStr(&I) << "\n";
-
-                        if (dgpts.isUnknownSingleton()) {
-                            std::cout << "  -> no-information\n";
-                        }
-                        for (const auto &ptr : dgpts) {
-                            std::cout << "  -> " << valToStr(ptr.value) << " (+" << ptr.offset << ")\n";
-                        }
-                        if (dgpts.hasUnknown()) {
-                            std::cout << "  -> unknown\n";
-                        }
-                        if (dgpts.hasNull()) {
-                            std::cout << "  -> null\n";
-                        }
-                        if (dgpts.hasNullWithOffset()) {
-                            std::cout << "  -> null + ?\n";
-                        }
-                        if (dgpts.hasInvalidated()) {
-                            std::cout << "  -> invalidated\n";
-                        }
-                        */
-
-                        if (pts.isUnknownSingleton() && dgpts.isUnknownSingleton()) {
-                            same++;
-                            continue;
-                        }
-                        if (!pts.isUnknownSingleton() && dgpts.isUnknownSingleton() && pts.size() != 0) {
-                            more_accurate++;
-                            continue;
-                        }
-                        if (pts.isUnknownSingleton() != dgpts.isUnknownSingleton()) {
-                            errors++;
-                            continue;
-                        }
-                        if (pts.hasUnknown() && !dgpts.hasUnknown()) {
-                            errors++;
-                            continue;
-                        }
-                        if (pts.hasInvalidated() != dgpts.hasInvalidated()) {
-                            errors++;
-                            continue;
-                        }
-                        if (pts.size() == 0 && dgpts.size() != 0){
-                            errors++;
-                            continue;
-                        }
-                        unsigned long dgsize = dgpts.size();
-                        if (dgpts.hasNullWithOffset() && dgpts.hasNull() && dgsize < 2){ // dg sometimes ignores null or nullwithoffset in its size calculations for whatever reason
-                            dgsize = 2;
-                        }
-                        if (pts.size() < dgsize){
-                            more_accurate++;
-                        }
-                        if (pts.size() > dgsize){
-                            errors++;
-                        }
-                        if (pts.size() == dgsize){
-                            same++;
-                        }
-                        continue;
-                    }
 
                     if (pts.isUnknownSingleton()) {
                         // do not dump the "no-information"
@@ -1016,9 +914,6 @@ int main(int argc, char *argv[]) {
                 }
             }
         }
-        std::cout << "Same: " << same << "\n";
-        std::cout << "More accurate: " << more_accurate << "\n";
-        std::cout << "Errors: " << errors << "\n";
         return 0;
     }
 
