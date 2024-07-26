@@ -16,6 +16,7 @@
 #endif
 
 #include "dg/llvm/PointerAnalysis/PointerAnalysis.h"
+#include "dg/llvm/PointerAnalysis/SMGPointerAnalysis.h"
 
 #include "dg/tools/llvm-slicer-opts.h"
 #include "dg/tools/llvm-slicer-utils.h"
@@ -64,6 +65,10 @@ llvm::cl::opt<bool> fsinv(
 llvm::cl::opt<bool> svf("svf", llvm::cl::desc("Run SVF PTA (Andersen)."),
                         llvm::cl::init(false), llvm::cl::cat(SlicingOpts));
 #endif
+
+llvm::cl::opt<bool> smg("smg", llvm::cl::desc("Run SMG-based PTA."),
+                        llvm::cl::init(false), llvm::cl::cat(SlicingOpts));
+
 
 static std::string valToStr(const llvm::Value *val) {
     using namespace llvm;
@@ -228,6 +233,12 @@ int main(int argc, char *argv[]) {
                               0);
     }
 #endif
+    if (smg) {
+        opts.analysisType = dg::LLVMPointerAnalysisOptions::AnalysisType::smg;
+        analyses.emplace_back("SMG-based",
+                              createAnalysis<SMGPointerAnalysis>(M.get(), opts),
+                              0);
+    }
 
     for (auto &it : analyses) {
         start = clock();
