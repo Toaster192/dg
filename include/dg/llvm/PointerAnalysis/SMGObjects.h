@@ -84,17 +84,23 @@ class SMGObject{
     SMGObjectType type;
     /* Var type attributes */
     std::string var_name{""};
+    /* Unused 
     int varUID;
+    */
     std::string var_loc_file;
     int var_loc_line;
     int var_loc_column;
     llvm::Value* llvm_val{nullptr};
     /* Region type attributes */
+    /* Unused 
     int size_high;
     int size_low;
+    */
     /* Empty type attributes */
+    /* Unused 
     int size;
     std::string placement;
+    */
     /* Composite type attributes */
     std::vector<SMGObject> objects;
     /* Composite linked list type attributes */
@@ -140,8 +146,10 @@ inline SMGObject SMGObject::copyEmptyObject(SMGObject &old, int new_id){
     new_empty.id = new_id;
     new_empty.label = old.label;
     new_empty.type = old.type;
+    /* Unused
     new_empty.size = old.size;
     new_empty.placement = old.placement;
+    */
     return new_empty;
 }
 
@@ -150,8 +158,10 @@ inline SMGObject SMGObject::copyRegionObject(SMGObject &old, int new_id){
     new_region.id = new_id;
     new_region.label = old.label;
     new_region.type = old.type;
+    /* Unused
     new_region.size_low = old.size_low;
     new_region.size_high = old.size_high;
+    */
     return new_region;
 }
 
@@ -178,7 +188,9 @@ inline void from_json(const json& j, SMGObject& o) {
         if (v.find("name") != v.end()){
             v.at("name").get_to(o.var_name);
         }
+        /* Unused
         v.at("uid").get_to(o.varUID);
+        */
 
         json l = j.at("value").at("loc");
         l.at("file").get_to(o.var_loc_file);
@@ -188,17 +200,21 @@ inline void from_json(const json& j, SMGObject& o) {
         o.llvm_val = nullptr;
     } else if (o.label == "SC_ON_STACK" || o.label == "SC_ON_HEAP"){
         o.type = REGION;
+        /* Unused
         j.at("size_low").get_to(o.size_low);
         j.at("size_high").get_to(o.size_high);
+        */
     } else if (o.label == "empty" || o.label == "UNIFORM_BLOCK"){
         o.type = EMPTY;
+        /* Unused
         if (j.find("size") != j.end()){
             j.at("size").get_to(o.size);
         }
         if (j.find("placement") != j.end()){
             j.at("placement").get_to(o.placement);
         }
-    } else if (o.label == "region"){
+        */
+    } else if (o.label == "region" || o.label == "0..1"){ // TODO: handle 0..1 differently?
         o.type = COMPOSITEREGION;
         for (auto obj : j["objects"]){
             o.objects.push_back(obj.template get<SMGObject>());
@@ -236,8 +252,10 @@ class SMGValue{
 
     std::string memory_location;
     std::string target_spec_label;
+    /* Unused
     int size_high;
     int size_low;
+    */
     bool is_null{false};
     bool is_null_with_offset{false};
     bool is_unknown{false};

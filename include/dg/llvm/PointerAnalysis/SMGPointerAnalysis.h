@@ -246,7 +246,7 @@ class SMG {
         }
         // Needs to be done in a separate loop otherwise the pointers get shifted
         for (int var_id : to_remove){
-            objects.erase(std::remove_if(objects.begin(), objects.end(), [&var_id](SMGObject o){return o.id == var_id;}), objects.end());
+            objects.erase(std::remove_if(objects.begin(), objects.end(), [&var_id](SMGObject &o){return o.id == var_id;}), objects.end());
         }
         return;
     }
@@ -291,19 +291,24 @@ class SMG {
             }
             SMGValue* first_value = getTSFirstValueByObjID(val.obj);
             if (first_value == nullptr){
-                llvm::errs() << "TS_ALL ID " << val.id << " no TS_FIRST found to point to." << "\n";
+                first_value = getTSLastValueByObjID(val.obj);
+                if (first_value == nullptr){
+                    llvm::errs() << "TS_ALL ID " << val.id << " no TS_FIRST or TS_LAST found to point to." << "\n";
+                }
             }
             auto connected_edges = getEdgesWithId(val.id, edges);
-            auto to_edges = connected_edges.first;
             auto from_edges = connected_edges.second;
-            if (to_edges.size() != 1 || from_edges.size() != 1){
-                llvm::errs() << "TS_ALL ID " << val.id << " unexpected amount of edges found" << "\n";
+
+            if (from_edges.size() != 1){
+                auto to_edges = connected_edges.first;
+                llvm::errs() << "TS_ALL ID " << val.id << " unexpected amount of edges found" << "\n"
+                             << "to_edges size: " << to_edges.size() << ", from_edges size: " << from_edges.size() << "\n";
             }
 
             // Remove the TS_ALL -> list edge and point whichever edge was pointing at TS_ALL to the TS_FIRST of the list
             int obj_id = val.obj;
             int val_id = val.id;
-            edges.erase(std::remove_if(edges.begin(), edges.end(), [&obj_id,&val_id](SMGEdge e){return e.to == obj_id && e.from == val_id;}), edges.end());
+            edges.erase(std::remove_if(edges.begin(), edges.end(), [&obj_id,&val_id](SMGEdge &e){return e.to == obj_id && e.from == val_id;}), edges.end());
             replaceEdgeTargets(val_id, first_value->id);
             // Nothing should be pointing to TS_ALL anymore so we can remove it
             values.erase(it);
@@ -356,31 +361,35 @@ class SMG {
                     //llvm::errs() << "No debug info found!\n";
                     continue;
                 }
-                for (auto &var : vars){
+                auto var_it = vars.begin();
+                while (var_it != vars.end()){
+                    SMGObject* var = *var_it;
                     if (dbg.getLine() == (unsigned) var->var_loc_line && dbg.getCol() == (unsigned) var->var_loc_column){
                         if(!llvm::isa<llvm::MetadataAsValue>(I->getOperand(0))){
                             // Shouldn't happen
+                            ++var_it;
                             continue;
                         }
                         llvm::Metadata *Meta = llvm::cast<llvm::MetadataAsValue>(I->getOperand(0))->getMetadata();
                         llvm::Value *V = llvm::cast <llvm::ValueAsMetadata>(Meta)->getValue();
                         var->llvm_val = V;
                         //llvm::errs() << "val: " << *var->llvmVal  << "\n";
-                        auto it = std::find(vars.begin(), vars.end(), var);
-                        vars.erase(it);
+                        vars.erase(var_it);
                         // Can't break as there may be two objects of the same variable for whatever reason
+                    } else {
+                        ++var_it;
                     }
                 }
-                auto it = mems.begin();
-                while (it != mems.end()){
-                    SMGValue* val = *it;
+                auto mem_it = mems.begin();
+                while (mem_it != mems.end()){
+                    SMGValue* val = *mem_it;
                     if (dbg.getLine() == (unsigned) val->mem_loc_line && dbg.getCol() == (unsigned) val->mem_loc_column){
                         llvm::Value *V = llvm::dyn_cast<llvm::Value>(&(*I));
                         val->llvm_val = V;
                         //llvm::errs() << "val: " << *val->llvmVal  << "\n";
-                        mems.erase(it);
+                        mems.erase(mem_it);
                     } else {
-                        ++it;
+                        ++mem_it;
                     }
                 }
             }
@@ -492,7 +501,7 @@ class SMG {
     }
 
     bool hasEdge(int from, int to){
-        for (auto edge : edges){
+        for (auto &edge : edges){
             if (edge.from == from && edge.to == to){
                 return true;
             }
@@ -501,7 +510,7 @@ class SMG {
     }
 
     int getEdgeOffset(int from, int to){
-        for (auto edge : edges){
+        for (auto &edge : edges){
             if (edge.from == from && edge.to == to){
                 return edge.off;
             }
@@ -521,7 +530,7 @@ class SMG {
     }
 
     SMGValue* getObjectsPtrValue(int objectId){
-        for (auto edge : edges){
+        for (auto &edge : edges){
             if (edge.from == objectId){
                 return &*getValueById(edge.to, values);
             }
@@ -530,9 +539,9 @@ class SMG {
     }
     
     void removeEdgesOfObjects(std::vector<SMGObject> objects){
-        for (auto obj : objects){
+        for (auto &obj : objects){
             int id = obj.id;
-            edges.erase(std::remove_if(edges.begin(), edges.end(), [&id](SMGEdge e){return e.to == id || e.from == id;}), edges.end());
+            edges.erase(std::remove_if(edges.begin(), edges.end(), [&id](SMGEdge &e){return e.to == id || e.from == id;}), edges.end());
         }
     }
 
@@ -545,7 +554,7 @@ class SMG {
                 if (obj.var_name == ""){
                     int var_id = obj.id;
 
-                    edges.erase(std::remove_if(edges.begin(), edges.end(), [&var_id](SMGEdge e){return e.from == var_id || e.to == var_id;}), edges.end());
+                    edges.erase(std::remove_if(edges.begin(), edges.end(), [&var_id](SMGEdge &e){return e.from == var_id || e.to == var_id;}), edges.end());
 
                     objects.erase(it);
                     continue;
@@ -650,65 +659,6 @@ class SMG {
                     prev_value = getObjectsPtrValue(prev_obj->id);
                 }
 
-                /*
-                if (linked_list.seg_min_len == 0){
-                    auto obj_it = getObjectById(linked_list.obj_id, linked_list.objects);
-                    SMGRegionObject region = std::get<SMGRegionObject>(*obj_it);
-                    // Set both first and last to a virtual memory location
-                    if (last_value){
-                        first_value->memory_location = last_value->memory_location = region.label;
-                        first_value->size_low        = last_value->size_low        = region.size_low;
-                        first_value->size_high       = last_value->size_high       = region.size_high;
-                        first_value->is_unknown      = last_value->is_unknown      = true;
-                    } else {
-                        first_value->memory_location = region.label;
-                        first_value->size_low        = region.size_low;
-                        first_value->size_high       = region.size_high;
-                        first_value->is_unknown      = true;
-                    }
-
-                    // Add edge to the next / prev pointers
-                    if(linked_list.label == "DLS"){
-                        edges.push_back(SMGEdge(first_value->id, prev_value->id, getEdgeOffset(first_value->id, region.id)));
-                    }
-                    if(last_value){
-                        edges.push_back(SMGEdge(last_value->id, next_value->id, getEdgeOffset(last_value->id, region.id)));
-                    }
-                    // Add a bypass of the first / last values
-                    std::vector<SMGEdge> newEdges;
-                    for (SMGEdge edge : edges){
-                        if (linked_list.label == "DLS" && edge.to == first_value->id){
-                            newEdges.push_back(SMGEdge(edge.from, prev_value->id, edge.off));
-                        }
-                        if (last_value && edge.to == last_value->id){
-                            newEdges.push_back(SMGEdge(edge.from, next_value->id, edge.off));
-                        }
-                    }
-                    for (SMGEdge edge : newEdges){
-                        edges.push_back(edge);
-                    }
-                    // Remove all edges inside the linked list before the objects are abandoned
-                    removeEdgesOfObjects(linked_list.objects);
-                */
-                /*
-                } else if (linked_list.seg_min_len == 1){
-                    auto obj_it = getObjectById(linked_list.obj_id, linked_list.objects);
-                    SMGRegionObject region = std::get<SMGRegionObject>(*obj_it);
-                    // Set the last virtual object to a virtual memory location
-                    last_value->memory_location = region.label;
-                    last_value->size_low        = region.size_low;
-                    last_value->size_high       = region.size_high;
-                    last_value->is_unknown      = true;
-                    // Disconnect the last object and the linked list
-                    int region_id = region.id;
-                    int last_value_id = last_value->id;
-                    edges.erase(std::remove_if(edges.begin(), edges.end(), [&last_value_id, &region_id](SMGEdge e){return e.from == last_value_id && e.to == region_id;}), edges.end());
-                    // Add a pointer from first->next to last (unknown)
-                    edges.push_back(SMGEdge(next_obj->id, last_value->id, 0));
-
-                    expandCompositeObject(linked_list, newObjects);
-                } else if (linked_list.seg_min_len == 1 || linked_list.seg_min_len == 2){
-                */
                 // copy the linked list segment
                 SMGObject copy = SMGObject::copyLinkedList(linked_list, findUniqueId(values, objects, edges));
                 copyLinkedListObjectObjects(copy, linked_list);
@@ -718,17 +668,6 @@ class SMG {
                     last_value->obj = copy.obj_id;
                 }
 
-                /*
-                // create an unknown value to point to between the two border segments etc.
-                SMGValue unknown(findUniqueId(values, objects, edges), "unknown");
-                unknown.is_unknown = true;
-                values.push_back(unknown);
-
-                // first->next = unknown, last->prev = uknown
-                edges.push_back(SMGEdge(next_obj_id, unknown.id, 0));
-                int copy_prev_id = copy.getPrevObjectId(edges);
-                edges.push_back(SMGEdge(copy_prev_id, unknown.id, 0));
-                */
                 chainListSegments(linked_list, copy);
 
                 // last->next = next_value
@@ -744,17 +683,13 @@ class SMG {
                 int next_value_id = next_value->id;
                 if (last_value){
                     int last_value_id = last_value->id;
-                    edges.erase(std::remove_if(edges.begin(), edges.end(), [&last_value_id, &first_obj](SMGEdge e){return e.from == last_value_id && e.to == first_obj;}), edges.end());
+                    edges.erase(std::remove_if(edges.begin(), edges.end(), [&last_value_id, &first_obj](SMGEdge &e){return e.from == last_value_id && e.to == first_obj;}), edges.end());
                 }
-                edges.erase(std::remove_if(edges.begin(), edges.end(), [&next_obj_id, &next_value_id](SMGEdge e){return e.from == next_obj_id && e.to == next_value_id;}), edges.end());
+                edges.erase(std::remove_if(edges.begin(), edges.end(), [&next_obj_id, &next_value_id](SMGEdge &e){return e.from == next_obj_id && e.to == next_value_id;}), edges.end());
 
                 expandCompositeObject(copy, newObjects);
                 expandCompositeObject(linked_list, newObjects);
-                /*
-                } else {
-                    llvm::errs() << "Unknown seg_min_len in a linked list composite object id: " << linked_list.id << "\n";
-                }
-                */
+
                 objects.erase(it);
             } else {
                 ++it;
@@ -786,12 +721,12 @@ class SMG {
         while (val_it != values.end()){
             auto &val = *val_it;
             int val_id = val.id;
-            if (val.label == "int"){
+            if (val.label == "int" || val.label == "int_range"){
                 val.is_null_with_offset = true;
             }
-            if (val.label == "int_range" || val.label == "real"){ // let "fnc", "str" and "int" pass
+            if (val.label == "real"){ // let "fnc", "str", "int" and "int_range" pass
                 values.erase(val_it);
-                edges.erase(std::remove_if(edges.begin(), edges.end(), [&val_id](SMGEdge e){return e.to == val_id;}), edges.end());
+                edges.erase(std::remove_if(edges.begin(), edges.end(), [&val_id](SMGEdge &e){return e.to == val_id;}), edges.end());
             } else {
                 ++val_it;
             }
@@ -824,8 +759,10 @@ class SMG {
                     SMGObject obj = *it;
 
                     val.memory_location = obj.label;
+                    /* Unused
                     val.size_low = obj.size_low;
                     val.size_high = obj.size_high;
+                    */
 
                     replaceEdgeTargets(obj_id, val_id);
 
@@ -833,10 +770,10 @@ class SMG {
                     val.is_var = true;
                     val.var = var;
 
-                    edges.erase(std::remove_if(edges.begin(), edges.end(), [&val_id](SMGEdge e){return e.to == val_id && e.from == val_id;}), edges.end());
+                    edges.erase(std::remove_if(edges.begin(), edges.end(), [&val_id](SMGEdge &e){return e.to == val_id && e.from == val_id;}), edges.end());
                     objects.erase(it);
 
-                    objects.erase(std::remove_if(objects.begin(), objects.end(), [&var_id](SMGObject o){return o.id == var_id;}), objects.end());
+                    objects.erase(std::remove_if(objects.begin(), objects.end(), [&var_id](SMGObject &o){return o.id == var_id;}), objects.end());
                     break;
                 }
             }
@@ -869,11 +806,13 @@ class SMG {
             SMGObject obj = *it;
 
             val.memory_location = obj.label;
+            /* Unused
             val.size_low = obj.size_low;
             val.size_high = obj.size_high;
+            */
 
             objects.erase(it);
-            edges.erase(std::remove_if(edges.begin(), edges.end(), [&obj_id,&val_id](SMGEdge e){return e.to == obj_id && e.from == val_id;}), edges.end());
+            edges.erase(std::remove_if(edges.begin(), edges.end(), [&obj_id,&val_id](SMGEdge &e){return e.to == obj_id && e.from == val_id;}), edges.end());
             replaceEdgeTargets(obj_id, val_id);
         }
         //llvm::errs() << "Merging values (" << values.size() << ") with static variable objects (total objects: " << objects.size() << ")\n";
@@ -895,9 +834,9 @@ class SMG {
                     val.is_var = true;
                     val.var = var;
 
-                    edges.erase(std::remove_if(edges.begin(), edges.end(), [&val_id](SMGEdge e){return e.to == val_id && e.from == val_id;}), edges.end());
+                    edges.erase(std::remove_if(edges.begin(), edges.end(), [&val_id](SMGEdge &e){return e.to == val_id && e.from == val_id;}), edges.end());
 
-                    objects.erase(std::remove_if(objects.begin(), objects.end(), [&var_id](SMGObject o){return o.id == var_id;}), objects.end());
+                    objects.erase(std::remove_if(objects.begin(), objects.end(), [&var_id](SMGObject &o){return o.id == var_id;}), objects.end());
                     break;
                 }
             }
@@ -915,7 +854,7 @@ class SMG {
                     }
                 }
 
-                edges.erase(std::remove_if(edges.begin(), edges.end(), [&val_id](SMGEdge e){return e.from == val_id;}), edges.end());
+                edges.erase(std::remove_if(edges.begin(), edges.end(), [&val_id](SMGEdge &e){return e.from == val_id;}), edges.end());
             }
         }
         //llvm::errs() << "Done merging values (" << values.size() << ") objects (" << objects.size() << ")\n";
@@ -938,10 +877,10 @@ class SMG {
 
             if (to_edges.size() == 0){
                 llvm::errs() << "Found empty object id " << empty.id << " with no \"to\" edge!\n";
-                for (auto from_edge : from_edges){
+                for (auto &from_edge : from_edges){
                     edges.erase(std::find(edges.begin(), edges.end(), *from_edge));
                 }
-                objects.erase(std::remove_if(objects.begin(), objects.end(), [&empty](SMGObject o){return o.id == empty.id;}), objects.end());
+                objects.erase(std::remove_if(objects.begin(), objects.end(), [&empty](SMGObject &o){return o.id == empty.id;}), objects.end());
                 continue;
             }
 
@@ -949,14 +888,14 @@ class SMG {
                 llvm::errs() << "More than 1 edge(" << to_edges.size() << ") pointing at object id " << empty.id << "!\n";
                 continue;
             }
-            SMGEdge to_edge = *to_edges[0];
-            for (auto from_edge : from_edges){
+            SMGEdge &to_edge = *to_edges[0];
+            for (auto &from_edge : from_edges){
                 from_edge->from = to_edge.from;
                 from_edge->off += to_edge.off;
             }
 
             edges.erase(std::find(edges.begin(), edges.end(), to_edge));
-            objects.erase(std::remove_if(objects.begin(), objects.end(), [&empty](SMGObject o){return o.id == empty.id;}), objects.end());
+            objects.erase(std::remove_if(objects.begin(), objects.end(), [&empty](SMGObject &o){return o.id == empty.id;}), objects.end());
         }
         //llvm::errs() << "Done removing empty objects at " << objects.size() << ".\n";
     }
@@ -971,7 +910,7 @@ class SMG {
                 ++it;
             } else {
                 //llvm::errs() << "Removing unmerged value: " << val_id << "\n";
-                edges.erase(std::remove_if(edges.begin(), edges.end(), [&val_id](SMGEdge e){return e.to == val_id || e.from == val_id;}), edges.end());
+                edges.erase(std::remove_if(edges.begin(), edges.end(), [&val_id](SMGEdge &e){return e.to == val_id || e.from == val_id;}), edges.end());
                 values.erase(it);
             }
         }
@@ -1163,7 +1102,10 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
                 } else if (llvm::isa <llvm::AllocaInst> (*I)){
                     pts[V].first.insert(LLVMPointer(V, Offset(0)));
                 } else if (llvm::isa <llvm::CastInst> (*I)){
-                    pts[V].first.insert(LLVMPointer(I->getOperand(0), Offset(0)));
+                    llvm::Value *op = I->getOperand(0);
+                    if (pts.count(op)){
+                        mergePTAPairs(pts[V], pts[op]);
+                    }
                 } else if (llvm::CallInst *CI = llvm::dyn_cast<llvm::CallInst>(&*I)){
                     // Not sure whether we want the lone memory locations present in the PTA or not
                     auto func = CI->getCalledFunction();
@@ -1176,8 +1118,6 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
                         pts[V].first.insert(LLVMPointer(V, Offset(0)));
                     } else if (returns.count(F)){
                         mergePTAPairs(pts[V], returns[F]);
-                    } else {
-                        continue;
                     }
                 } else if (llvm::isa <llvm::ReturnInst> (*I)){
                     if (I->getNumOperands() == 0){
@@ -1189,7 +1129,6 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
                         llvm::Value *F = llvm::dyn_cast<llvm::Value>(I->getFunction());
                         mergePTAPairs(returns[F], pts[op]);
                     }
-                    continue;
                 } else if (llvm::GetElementPtrInst *GEPI = llvm::dyn_cast<llvm::GetElementPtrInst>(&*I)){
                     if (!GEPI->hasAllConstantIndices()){
                         llvm::Value *op = I->getOperand(0);
@@ -1238,11 +1177,18 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
                             pts[V].second.unknown = true;
                         }
                     }
+                } else if (llvm::isa <llvm::SelectInst> (*I)){
+                    continue;
+                } else if (llvm::isa <llvm::ICmpInst> (*I)){
+                    continue;
+                } else if (llvm::isa <llvm::PHINode> (*I)){
+                    // TODO ?
+                    continue;
                 } else if (llvm::isa <llvm::StoreInst> (*I)){
                     continue;
                 } else if (llvm::isa <llvm::BranchInst> (*I)){
                     continue;
-                } else if (llvm::isa <llvm::ICmpInst> (*I)){
+                } else if (llvm::isa <llvm::SwitchInst> (*I)){
                     continue;
                 } else if (llvm::isa <llvm::UnreachableInst> (*I)){
                     continue;
@@ -1253,10 +1199,8 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
                             mergePTAPairs(pts[V], pts[op]);
                         }
                     }
-                    continue;
                 } else {
                     llvm::errs() << "Unknown type of instruction? " << *I  << "\n";
-                    continue;
                 }
                 /*
                 for(auto pt : pts[V].first){
@@ -1356,6 +1300,9 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
         llvm::errs() << "Running SMG pointer analysis" << "\n";
         std::string smg_prefix = "smg-";
         std::string smg_suffix = ".json";
+
+        // Optimize away global context as there is nothing to be gained there
+        std::string global_prefix = "smg-__initGlobalVar";
         GlobalSMGPTA global_pta;
         std::set<std::filesystem::path> path_set;
 
@@ -1371,15 +1318,21 @@ class SMGPointerAnalysis : public LLVMPointerAnalysis {
             if (!starts_with(filename, smg_prefix) || !ends_with(filename, smg_suffix)){
                 continue;
             }
+            
+            if (starts_with(filename, global_prefix)){
+                continue;
+            }
 
             //llvm::errs() << "Parsing json file: " << path << "\n";
             std::ifstream f(path);
             json smg_json = json::parse(f);
             //llvm::errs() << "Done parsing the json file.\n";
 
+            /* replaced by global_prefix check
             if (smg_json["metadata"]["func_name"] == "__initGlobalVar"){
                 continue;
             }
+            */
 
             //llvm::errs() << "Parsing the json object into SMG.\n";
             SMG smg = SMG(smg_json);
